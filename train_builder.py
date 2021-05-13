@@ -13,8 +13,7 @@ import sys
 sys.path.insert(0,'/home/huangz78/hydro/unet3d/')
 from models.unet3d_model import UNet3D
 from models.dnet import weights_init,Discriminator
-from models.utils import illustrate
-from models.train import gan_train
+from train import gan_train
 
 def get_args():
     parser = argparse.ArgumentParser(description='Train GAN on hydro simulation data',
@@ -82,12 +81,12 @@ if __name__ == '__main__':
     else:
         checkpoint = torch.load(args.dpath)
         dnet.load_state_dict(checkpoint['model_state_dict'])
-        print(f'D net loaded from {args.dpath}')    
+        print(f'D net loaded from {args.dpath} successfully!\n')    
     gnet = UNet3D(1,1,is_segmentation=False,final_sigmoid=False)
     if args.gpath is not None:
         checkpoint = torch.load(args.gpath)
         gnet.load_state_dict(checkpoint['model_state_dict'])
-        print(f'G net loaded from {args.gpath}')
+        print(f'G net loaded from {args.gpath} successfully!\n')
     
     ############################
     ### training process

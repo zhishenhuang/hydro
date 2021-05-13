@@ -8,6 +8,16 @@ import torch.optim as optim
 import xarray as xr
 import random
 
+def noise_generate(frame, fl=0.006, fr=0.0179, cl=0.06,cr=0.21, sigma=1e-1 ,mode='linear' ):
+    if mode == 'linear':
+        factor = np.random.uniform(fl,fr,1)
+        const  = np.random.uniform(cl,cr,1)
+        noise  = frame * factor + const
+    elif mode == 'gaussian':
+        noise_mag = sigma*np.max(np.abs(frame.flatten()))
+        noise = noise_mag*np.random.randn(frame.shape[0],frame.shape[1])
+    return noise
+
 def complete(a):
     heg = a.shape[0]
     wid = a.shape[1]
@@ -19,19 +29,24 @@ def complete(a):
 
 def illustrate(imgs,full=False):
     samp = imgs.clone().detach()
+    vmin = 0; vmax = 1.1
+#     vmax = torch.max(torch.flatten(samp))
+#     vmin = torch.min(torch.flatten(samp))
     fig, axs = plt.subplots(nrows=2, ncols=4, sharex=False, figsize=(18, 18))
     for t in range(8):
         axs[t//4][t%4].set_title('t = ' + str(t))
         if full:
-            hd = axs[t//4][t%4].imshow(complete(samp[0,0,t,:,:]))
+            hd = axs[t//4][t%4].imshow(complete(samp[0,0,t,:,:]),vmin=vmin, vmax=vmax)
         else:
-            hd = axs[t//4][t%4].imshow(samp[0,0,t,:,:])
-        divider = make_axes_locatable(axs[t//4][t%4])
-        cax = divider.append_axes("right", size="5%", pad=0.05)
-        fig.colorbar(hd,cax=cax)            
+            hd = axs[t//4][t%4].imshow(samp[0,0,t,:,:],vmin=vmin, vmax=vmax)
+#         divider = make_axes_locatable(axs[t//4][t%4])
+#         cax = divider.append_axes("right", size="5%", pad=0.05)
+#         fig.colorbar(hd,cax=cax)
+    cbar = fig.colorbar(hd, ax=axs.ravel().tolist(), shrink=0.95)
+    cbar.set_ticks(np.arange(vmin, vmax, (vmax-vmin)/10))
     fig.suptitle('Generated dynamics, ' + str(t) + ' consecutive frames')
-    plt.rcParams.update({'font.size': 12})
-    plt.tight_layout()
+    plt.rcParams.update({'font.size': 10})
+#     plt.tight_layout()
     plt.show()
 
 def rolling_mean(x,window):
@@ -47,8 +62,12 @@ def rolling_mean(x,window):
     cumsum = np.cumsum(np.insert(x, 0, 0))
     return (cumsum[window:] - cumsum[:-window]) / float(window)
 
-def visualization(G_losses,D_losses,val_losses,log1=False,log2=False,window=0):
-    fig,axs = plt.subplots(3,1,figsize=(10, 6))
+def visualization(G_losses,D_losses,val_losses,nrmse_=None,\
+                  log1=False,log2=False,log3=False,window=0):
+    if nrmse_ is None:
+        fig,axs = plt.subplots(3,1,figsize=(17,15))
+    else:
+        fig,axs = plt.subplots(4,1,figsize=(20,15))
     axs[0].set_xlabel('iters', fontsize=16)
     axs[0].set_ylabel('G loss', color='r', fontsize=16)
     if window > 0:
@@ -78,11 +97,30 @@ def visualization(G_losses,D_losses,val_losses,log1=False,log2=False,window=0):
     axs[2].tick_params(axis='x', labelsize='large')
     axs[2].tick_params(axis='y', labelsize='large')
     
+    if nrmse_ is not None:
+        axs[3].set_xlabel('iters', fontsize=16)
+        axs[3].set_ylabel('nrmse, averaged', fontsize=16)
+        axs[3].plot(nrmse_)
+        if log3:
+            axs[3].set_yscale('log')
+        axs[3].tick_params(axis='x', labelsize='large')
+        axs[3].tick_params(axis='y', labelsize='large')
+    
     plt.show()
     
 datapath = '/mnt/shared_b/data/hydro_simulations/data/'
 real_label = 1.
 fake_label = 0.
+
+def aver_mse(fake,real):
+    '''
+    assume both input are 5-dimensional tensors
+    '''
+    diff  = torch.sqrt( torch.sum( torch.square(fake - real),dim=(2,3,4)) )
+    denom = torch.sqrt( torch.sum( torch.square(real) , dim=(2,3,4) ) )
+    nrmse = torch.sum(torch.div(diff,denom),dim=(0))/fake.shape[0]
+    return nrmse
+    
 def validate(testfiles,netD,netG,dep=8,batchsize=5,seed=0,img_size=320, device="cpu",sigmoid_on=False):
     filenum = len(testfiles)
     batchsize = min(filenum,batchsize)
@@ -92,23 +130,28 @@ def validate(testfiles,netD,netG,dep=8,batchsize=5,seed=0,img_size=320, device="
     # set the model in eval mode
     netD.eval()
     netG.eval()
-    eval_score = 0
+    eval_score = 0; nrmse = 0
     # evaluate on validation set
     fileind = 0
     criterion = nn.BCELoss() if sigmoid_on else nn.BCEWithLogitsLoss()
-
     while fileind < filenum:
-        dyn = np.zeros((batchsize,1,dep,256,256))
+        dyn   = np.zeros((batchsize,1,dep,256,256))
+        noise = np.zeros((batchsize,1,dep,256,256))
         bfile = 0
         while bfile < batchsize:
             filename = testfiles[fileind+bfile]
             sim = xr.open_dataarray(datapath+filename)        
             for t in range(dep):
                 dyn[bfile,0,t,:,:] = resize(sim.isel(t=t)[:img_size,:img_size].values,(256,256),anti_aliasing=True)
+            normalize_factor   = np.max( np.abs(dyn[bfile,0,:,:,:]).flatten() )
+            dyn[bfile,0,:,:,:] = dyn[bfile,0,:,:,:] / normalize_factor
+            for t in range(dep): # different noise for each frame when using a 'for' loop
+                noise[bfile,0,t,:,:] = noise_generate(dyn[bfile,0,t,:,:], mode='linear')
+            sim.close()
             bfile += 1
         fileind += batchsize
         with torch.no_grad():
-            dyn = torch.tensor(dyn).to(torch.float)
+            dyn = torch.tensor(dyn).to(torch.float); noise = torch.tensor(noise).to(torch.float)
             real_cpu = dyn.to(device)
             b_size = real_cpu.size(0)
 
@@ -120,8 +163,7 @@ def validate(testfiles,netD,netG,dep=8,batchsize=5,seed=0,img_size=320, device="
             errD_real = criterion(Dx1, Dx1_label)
 
             ## Test with all-fake batch
-            noise = torch.randn(b_size, 1, dep, 256,256,device=device)*1/5*torch.max(torch.abs(torch.flatten(real_cpu.detach()))) ## Gaussian Noise
-            fake  = netG(noise + real_cpu)
+            fake = netG(noise + real_cpu)
             DGz1_label = torch.full((b_size,), fake_label, dtype=torch.float, device=device)
             # Classify all fake batch with D
             DGz1 = netD(fake).view(-1)
@@ -129,11 +171,12 @@ def validate(testfiles,netD,netG,dep=8,batchsize=5,seed=0,img_size=320, device="
             errD_fake = criterion(DGz1, DGz1_label)
 
             eval_score = eval_score + (errD_real + errD_fake)
+            nrmse = nrmse + aver_mse(fake,real_cpu) * fake.shape[0]
     
     # set the model back to training mode
     netD.train()
     netG.train()
-    return eval_score/filenum
+    return eval_score/filenum, nrmse/filenum
 
 import importlib
 import logging

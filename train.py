@@ -7,23 +7,17 @@ from skimage.transform import resize
 import random
 import xarray as xr
 import os,sys
-from models.utils import validate,illustrate,visualization
+import matplotlib.pyplot as plt
+from models.utils import validate,illustrate,visualization, noise_generate
 
-def noise_generate(frame, fl=0.006, fr=0.0179, cl=0.06,cr=0.21, sigma=1e-1 ,mode='linear' ):
-    if mode == 'linear':
-        factor = np.random.uniform(fl,fr,1)
-        const  = np.random.uniform(cl,cr,1)
-        noise  = frame * factor + const
-    elif mode == 'gaussian':
-        noise_mag = sigma*np.max(np.abs(frame.flatten()))
-        noise = noise_mag*torch.randn(frame.shape[0],frame.shape[1])
-    return noise
 
-def gan_train(netG,netD,lrd=1e-5,lrg=2e-5,beta1=0.5,traintotal=500,testtotal=10,num_epochs=5,\
+def gan_train(netG,netD,lrd=1e-5,lrg=2e-5,beta1=0.5,\
+              traintotal=500,testtotal=10,num_epochs=5,\
               weight_DD=1-1e-3,dep=8,b_size=5,update_D_every=10,\
-              save_cp=False,make_plot=True,fileexp_ind=5010,sigmoid_on=False,\
+              fileexp_ind=5010,sigmoid_on=False,\
               print_every=10,validate_every=100,\
-              img_size=320,ngpu=0,manual_seed=999,device="cpu"):
+              img_size=320,ngpu=0,manual_seed=999,device="cpu",\
+              save_cp=False,make_plot=True,):
     '''
     netG             : input Generative network
     netD             : input Discriminative network
@@ -72,9 +66,7 @@ def gan_train(netG,netD,lrd=1e-5,lrg=2e-5,beta1=0.5,traintotal=500,testtotal=10,
     # Training Loop
     # Lists to keep track of progress
 #     img_list = []
-    G_losses   = []
-    D_losses   = []
-    val_losses = []
+    G_losses   = []; D_losses   = []; val_losses = []; nrmse_     = []
     criterion  = nn.BCELoss() if sigmoid_on else nn.BCEWithLogitsLoss()
     
     optimizerD = optim.Adam(netD.parameters(), lr=lrd, betas=(beta1, 0.999))
@@ -88,21 +80,21 @@ def gan_train(netG,netD,lrd=1e-5,lrg=2e-5,beta1=0.5,traintotal=500,testtotal=10,
     fileexp  = ncfiles[fileexp_ind] # fix one file to observe the outcome of the generator
     simexp   = xr.open_dataarray(datapath + fileexp)
     dynexp   = np.zeros((1,1,dep,256,256))
-    noiseexp = torch.zeros((1,1,dep,256,256)) # fix one set of dynamical frames for viewing
+    noiseexp = np.zeros((1,1,dep,256,256)) # fix one set of dynamical frames for viewing
     for t in range(dep):
         dynexp[0,0,t,:,:] = resize(simexp.isel(t=t)[:img_size,:img_size].values,(256,256),anti_aliasing=True)
-    normalize_factor   = np.max( dynexp[0,0,:,:,:].flatten() )
+    normalize_factor   = np.max( np.abs(dynexp[0,0,:,:,:]).flatten() )
     dynexp[0,0,:,:,:]  = dynexp[0,0,:,:,:] / normalize_factor
     for t in range(dep): # different noise for each frame when using a 'for' loop
         noiseexp[0,0,t,:,:] = noise_generate(dynexp[0,0,t,:,:],mode='linear') 
-    dynexp   = torch.tensor(dynexp).to(torch.float).to(device)
-    
+    dynexp   = torch.tensor(dynexp).to(torch.float).to(device); noiseexp = torch.tensor(noiseexp).to(torch.float).to(device)
+
     for epoch in range(num_epochs):
         try:
             fileind = 0; global_step = 0; D_update_ind = 0
             while fileind < traintotal:
                 dyn = np.zeros((b_size,1,dep,256,256))
-                noise = torch.zeros(dyn.shape)
+                noise = np.zeros(dyn.shape)
                 bfile = 0
                 while bfile < b_size:
                 # Format batch: prepare training data for D network
@@ -110,13 +102,13 @@ def gan_train(netG,netD,lrd=1e-5,lrg=2e-5,beta1=0.5,traintotal=500,testtotal=10,
                     sim = xr.open_dataarray(datapath+filename)
                     for t in range(dep):
                         dyn[bfile,0,t,:,:] = resize(sim.isel(t=t)[:img_size,:img_size].values,(256,256),anti_aliasing=True)
-                    normalize_factor   = np.max( dyn[bfile,0,:,:,:].flatten() ) # normalize each File
+                    normalize_factor   = np.max( np.abs(dyn[bfile,0,:,:,:]).flatten() ) # normalize each File
                     dyn[bfile,0,:,:,:] = dyn[bfile,0,:,:,:] / normalize_factor
                     for t in range(dep): # different noise for each frame when using a 'for' loop
                         noise[bfile,0,t,:,:] = noise_generate(dyn[bfile,0,t,:,:],mode='linear')
                     sim.close()
                     bfile += 1
-                dyn = torch.tensor(dyn).to(torch.float)
+                dyn = torch.tensor(dyn).to(torch.float); noise = torch.tensor(noise).to(torch.float)
                 real_cpu = dyn.to(device)
                 fileind += b_size
     #             b_size = real_cpu.size(0)
@@ -173,7 +165,7 @@ def gan_train(netG,netD,lrd=1e-5,lrg=2e-5,beta1=0.5,traintotal=500,testtotal=10,
                 optimizerG.step()
                 # Save Losses for plotting later
                 G_losses.append(errG.item())
-
+                
                 ############################
                 # Output training stats, and visualization
                 ############################
@@ -181,17 +173,20 @@ def gan_train(netG,netD,lrd=1e-5,lrg=2e-5,beta1=0.5,traintotal=500,testtotal=10,
                     print('[%d/%d][%d/%d]\t Loss_D: %.4f\t Loss_G: %.4f\t D(x): %.4f\t D(G(z)): D %.4f/0   G %.4f/1'
                           % (epoch+1, num_epochs, fileind, traintotal, \
                              errD.item(), errG.item(), D_x, D_G_z1, D_G_z2))
+                    np.savez('/home/huangz78/checkpoints/gan_train_track.npz',\
+                                 g_loss=G_losses,d_loss=D_losses,val_loss=val_losses,nrmse=nrmse)
                 if global_step%validate_every==0 :
-                    val_loss = validate(testfiles,netD,netG,dep=dep,batchsize=5,\
+                    val_loss,nrmse = validate(testfiles,netD,netG,dep=dep,batchsize=5,\
                                         seed=manual_seed,img_size=img_size,sigmoid_on=sigmoid_on,device=device)
                     val_losses.append(val_loss.item())
-                    print('validation loss = {}'.format(val_loss))
+                    nrmse_.append(nrmse.item())
+                    print('validation loss = {}, average nrmse = {}'.format(val_loss.item(),nrmse.item()))
                     schedulerD.step(val_loss)
                     schedulerG.step()
                     if make_plot:
                         fakeexp = netG(noiseexp + dynexp)
                         illustrate(fakeexp) # should show a fixed set of images instead of the set under processing!
-                        visualization(G_losses,D_losses,val_losses)                
+                        visualization(G_losses,D_losses,val_losses,nrmse)                
                     if save_cp:
                         dir_checkpoint = '/home/huangz78/checkpoints/'
                         try:
@@ -203,7 +198,7 @@ def gan_train(netG,netD,lrd=1e-5,lrg=2e-5,beta1=0.5,traintotal=500,testtotal=10,
                         torch.save({'model_state_dict': netD.state_dict()}, dir_checkpoint + 'netD.pth')
                         torch.save({'model_state_dict': netG.state_dict()}, dir_checkpoint + 'netG.pth')
                         np.savez('/home/huangz78/checkpoints/gan_train_track.npz',\
-                                 g_loss=G_losses,d_loss=D_losses,val_loss=val_losses)
+                                 g_loss=G_losses,d_loss=D_losses,val_loss=val_losses,nrmse=nrmse)
                         print(f'\t Checkpoint saved at epoch {epoch + 1}, iteration {global_step}!')
                 global_step += 1
         except KeyboardInterrupt: # need debug
@@ -212,13 +207,14 @@ def gan_train(netG,netD,lrd=1e-5,lrg=2e-5,beta1=0.5,traintotal=500,testtotal=10,
                 dir_checkpoint = '/home/huangz78/checkpoints/'
                 torch.save({'model_state_dict': netD.state_dict()}, dir_checkpoint + 'netD.pth')
                 torch.save({'model_state_dict': netG.state_dict()}, dir_checkpoint + 'netG.pth')
-                np.savez('/home/huangz78/checkpoints/gan_train_track.npz',g_loss=G_losses,d_loss=D_losses,val_loss=val_losses)
+                np.savez('/home/huangz78/checkpoints/gan_train_track.npz',\
+                         g_loss=G_losses,d_loss=D_losses,val_loss=val_losses,nrmse=nrmse)
                 print(f'\t Checkpoint saved at epoch {epoch+1}, iteration {global_step-1}!')
                 print('D net, G net, and loss records are saved after key interrupt~')
-                try:
-                    sys.exit(0)
-                except SystemExit:
-                    os._exit(0)
+            try:
+                sys.exit(0)
+            except SystemExit:
+                os._exit(0)
             
             # Check how the generator is doing by saving G's output on fixed_noise
 #             if (iters % 500 == 0) or ((epoch == num_epochs-1) and (i == len(dataloader)-1)):
