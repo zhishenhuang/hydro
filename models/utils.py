@@ -8,11 +8,22 @@ import torch.optim as optim
 import xarray as xr
 import random
 
-def noise_generate(frame, fl=0.006, fr=0.0179, cl=0.06,cr=0.21, sigma=1e-1 ,mode='linear' ):
+def Nrmse(x,xstar):
+    return torch.norm(x-xstar,'fro')/torch.norm(xstar,'fro')
+
+def l1(x,xstar):
+    return torch.norm(x-xstar,p=1)/torch.norm(xstar,p=1)
+
+def noise_generate(frame, fl=0.006, fr=0.0179, cl=0.06,cr=0.21, sigma=1e-1, f=0.01, c=0.1 ,mode='linear' ):
     if mode == 'linear':
         factor = np.random.uniform(fl,fr,1)
         const  = np.random.uniform(cl,cr,1)
         noise  = frame * factor + const
+    elif mode == 'const':
+        noise = frame * f + c
+    elif mode == 'const_rand':
+        c     = np.random.uniform(cl,cr,1)
+        noise = np.ones(frame.shape) * c
     elif mode == 'gaussian':
         noise_mag = sigma*np.max(np.abs(frame.flatten()))
         noise = noise_mag*np.random.randn(frame.shape[0],frame.shape[1])
@@ -62,12 +73,9 @@ def rolling_mean(x,window):
     cumsum = np.cumsum(np.insert(x, 0, 0))
     return (cumsum[window:] - cumsum[:-window]) / float(window)
 
-def visualization(G_losses,D_losses,val_losses,nrmse_=None,\
-                  log1=False,log2=False,log3=False,window=0):
-    if nrmse_ is None:
-        fig,axs = plt.subplots(3,1,figsize=(17,15))
-    else:
-        fig,axs = plt.subplots(4,1,figsize=(20,15))
+def visualization(G_losses,D_losses,val_losses,nrmse_=None,l1err_=None,linferr_=None,\
+                  log_loss=False,log_val=False,log_err=False,window=0):
+    fig,axs = plt.subplots(3,1,figsize=(10,8))
     axs[0].set_xlabel('iters', fontsize=16)
     axs[0].set_ylabel('G loss', color='r', fontsize=16)
     if window > 0:
@@ -76,7 +84,7 @@ def visualization(G_losses,D_losses,val_losses,nrmse_=None,\
         axs[0].plot(G_losses, color='r')
     axs[0].tick_params(axis='x', labelsize='large')
     axs[0].tick_params(axis='y', labelcolor='r',labelsize='large')
-    if log1:
+    if log_loss:
         axs[0].set_yscale('log')
     
     axs[1].set_xlabel('iters', fontsize=16)
@@ -86,27 +94,49 @@ def visualization(G_losses,D_losses,val_losses,nrmse_=None,\
     else:
         axs[1].plot(D_losses, color='b')
     axs[1].tick_params(axis='y', labelcolor='b',labelsize='large')
-    if log1:
+    if log_loss:
         axs[1].set_yscale('log')
 
     axs[2].set_xlabel('iters', fontsize=16)
     axs[2].set_ylabel('validation loss', fontsize=16)
     axs[2].plot(val_losses)
-    if log2:
+    if log_val:
         axs[2].set_yscale('log')
     axs[2].tick_params(axis='x', labelsize='large')
     axs[2].tick_params(axis='y', labelsize='large')
+    plt.show()
     
     if nrmse_ is not None:
-        axs[3].set_xlabel('iters', fontsize=16)
-        axs[3].set_ylabel('nrmse, averaged', fontsize=16)
-        axs[3].plot(nrmse_)
-        if log3:
-            axs[3].set_yscale('log')
-        axs[3].tick_params(axis='x', labelsize='large')
-        axs[3].tick_params(axis='y', labelsize='large')
-    
-    plt.show()
+        plt.figure()        
+        plt.xlabel('iters', fontsize=16)
+        plt.ylabel('nrmse, averaged', fontsize=16)
+        plt.plot(nrmse_)
+        if log_err:
+            plt.yscale('log')
+        plt.tick_params(axis='x', labelsize='large')
+        plt.tick_params(axis='y', labelsize='large')
+        plt.show()
+    if l1err_ is not None:
+        plt.figure()       
+        plt.xlabel('iters', fontsize=16)
+        plt.ylabel('rel. l1 error, averaged', fontsize=16)
+        plt.plot(l1err_)
+        if log_err:
+            plt.yscale('log')
+        plt.tick_params(axis='x', labelsize='large')
+        plt.tick_params(axis='y', labelsize='large')
+        plt.show()
+        
+    if linferr_ is not None:
+        plt.figure()        
+        plt.xlabel('iters', fontsize=16)
+        plt.ylabel('rel. linf error, averaged', fontsize=16)
+        plt.plot(linferr_)
+        if log_err:
+            plt.yscale('log')
+        plt.tick_params(axis='x', labelsize='large')
+        plt.tick_params(axis='y', labelsize='large')   
+        plt.show()
     
 datapath = '/mnt/shared_b/data/hydro_simulations/data/'
 real_label = 1.
@@ -116,41 +146,72 @@ def aver_mse(fake,real):
     '''
     assume both input are 5-dimensional tensors
     '''
-    diff  = torch.sqrt( torch.sum( torch.square(fake - real),dim=(2,3,4)) )
-    denom = torch.sqrt( torch.sum( torch.square(real) , dim=(2,3,4) ) )
+    diff  = torch.sqrt( torch.sum(torch.square(fake - real),dim=(2,3,4)) )
+    denom = torch.sqrt( torch.sum(torch.square(real) , dim=(2,3,4)) )
     nrmse = torch.sum(torch.div(diff,denom),dim=(0))/fake.shape[0]
     return nrmse
+
+def aver_l1(fake,real):
+    '''
+    assume both input are 5-dimensional tensors
+    '''
+    diff   = torch.sum( torch.abs(fake - real),dim=(2,3,4) ) 
+    denom  = torch.sum( torch.abs(real), dim=(2,3,4) ) 
+    nl1err = torch.sum(torch.div(diff,denom),dim=(0))/fake.shape[0]
+    return nl1err
+
+def aver_linf(fake,real):
+    '''
+    assume both input are 5-dimensional tensors
+    '''
+    diff     = torch.flatten(torch.abs(fake - real),start_dim=2)
+    denom    = torch.flatten(torch.abs(real),start_dim=2)
+    reldev   = torch.div(diff,denom)
+    reldev[reldev==float("Inf")] = 0
+    reldev   = torch.max(reldev,dim=2)[0]
+    nlinferr = torch.sum(reldev,dim=(0))/fake.shape[0]
+    return nlinferr
     
-def validate(testfiles,netD,netG,dep=8,batchsize=5,seed=0,img_size=320, device="cpu",sigmoid_on=False):
-    filenum = len(testfiles)
-    batchsize = min(filenum,batchsize)
+def validate(testfiles,netD,netG,dep=8,batchsize=2,seed=0,img_size=320, \
+             device="cpu",sigmoid_on=False,testfile_num=100):
+#     filenum = len(testfiles)
+    batchsize = min(testfile_num,batchsize)
     random.seed(seed)
     torch.manual_seed(seed)
     
     # set the model in eval mode
     netD.eval()
     netG.eval()
-    eval_score = 0; nrmse = 0
+    eval_score = 0; nrmse = 0; nl1err = 0; nlinferr = 0
     # evaluate on validation set
     fileind = 0
     criterion = nn.BCELoss() if sigmoid_on else nn.BCEWithLogitsLoss()
-    while fileind < filenum:
-        dyn   = np.zeros((batchsize,1,dep,256,256))
-        noise = np.zeros((batchsize,1,dep,256,256))
-        bfile = 0
-        while bfile < batchsize:
-            filename = testfiles[fileind+bfile]
-            sim = xr.open_dataarray(datapath+filename)        
-            for t in range(dep):
-                dyn[bfile,0,t,:,:] = resize(sim.isel(t=t)[:img_size,:img_size].values,(256,256),anti_aliasing=True)
-            normalize_factor   = np.max( np.abs(dyn[bfile,0,:,:,:]).flatten() )
-            dyn[bfile,0,:,:,:] = dyn[bfile,0,:,:,:] / normalize_factor
-            for t in range(dep): # different noise for each frame when using a 'for' loop
-                noise[bfile,0,t,:,:] = noise_generate(dyn[bfile,0,t,:,:], mode='linear')
-            sim.close()
-            bfile += 1
-        fileind += batchsize
-        with torch.no_grad():
+    normalize_factor = 50
+    batch_step = 0
+    with torch.no_grad():
+        while fileind < testfile_num:
+            dyn   = np.zeros((batchsize,1,dep,256,256))
+            noise = np.zeros((batchsize,1,dep,256,256))
+            bfile = 0
+            while bfile < batchsize:
+                filename = testfiles[fileind+bfile]
+                sim = xr.open_dataarray(datapath+filename)        
+                for t in range(dep):
+                    dyn[bfile,0,t,:,:] = resize(sim.isel(t=t)[:img_size,:img_size].values,(256,256),anti_aliasing=True)
+                maxval_tmp = np.max( np.abs(dyn[bfile,0,:,:,:]).flatten() ) # normalize each File
+                if maxval_tmp > normalize_factor:
+                    bfile -= 1
+                    fileind += 1
+                else:
+                    dyn[bfile,0,:,:,:] = dyn[bfile,0,:,:,:] / normalize_factor
+                    noise[bfile,0,:,:,:] = noise_generate(dyn[bfile,0,:,:,:],mode='const')
+    #             for t in range(dep): # different noise for each frame when using a 'for' loop
+    #                 noise[bfile,0,t,:,:] = noise_generate(dyn[bfile,0,t,:,:], mode='linear')
+                sim.close()
+                bfile += 1
+            fileind += batchsize
+            batch_step += 1
+
             dyn = torch.tensor(dyn).to(torch.float); noise = torch.tensor(noise).to(torch.float)
             real_cpu = dyn.to(device)
             b_size = real_cpu.size(0)
@@ -171,12 +232,14 @@ def validate(testfiles,netD,netG,dep=8,batchsize=5,seed=0,img_size=320, device="
             errD_fake = criterion(DGz1, DGz1_label)
 
             eval_score = eval_score + (errD_real + errD_fake)
-            nrmse = nrmse + aver_mse(fake,real_cpu) * fake.shape[0]
+            nrmse      = nrmse      + aver_mse(fake,real_cpu)  * fake.shape[0]
+            nl1err     = nl1err     + aver_l1(fake,real_cpu)   * fake.shape[0]
+#             nlinferr   = nlinferr   + aver_linf(fake,real_cpu) * fake.shape[0]
     
     # set the model back to training mode
     netD.train()
     netG.train()
-    return eval_score/filenum, nrmse/filenum
+    return eval_score/(batch_step*batchsize), nrmse/(batch_step*batchsize), nl1err/(batch_step*batchsize) #, nlinferr/filenum
 
 import importlib
 import logging
