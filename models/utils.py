@@ -38,12 +38,18 @@ def complete(a):
     a_full=resize(np.concatenate((al,ar), axis=1), (heg, wid), anti_aliasing=True)
     return a_full
 
-def illustrate(imgs,full=False):
+def illustrate(imgs,full=False,vmin=0,vmax=1.1):
     samp = imgs.clone().detach()
-    vmin = 0; vmax = 1.1
 #     vmax = torch.max(torch.flatten(samp))
 #     vmin = torch.min(torch.flatten(samp))
     fig, axs = plt.subplots(nrows=2, ncols=4, sharex=False, figsize=(18, 18))
+    if vmin==-np.inf or vmax==np.inf:
+        if full:
+            vmax = torch.max(complete(samp[0,0,:,:,:]))
+            vmin = torch.min(complete(samp[0,0,:,:,:]))
+        else:
+            vmax = torch.max(samp[0,0,:,:,:])
+            vmin = torch.min(samp[0,0,:,:,:])
     for t in range(8):
         axs[t//4][t%4].set_title('t = ' + str(t))
         if full:
