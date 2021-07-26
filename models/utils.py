@@ -225,15 +225,15 @@ def validate(testfiles,netD,netG,dep=8,batchsize=2,seed=0,img_size=320, \
             ## Test with all-real batch
             Dx1_label = torch.full((b_size,), real_label, dtype=torch.float, device=device)
             # Forward pass real batch through D
-            Dx1 = netD(real_cpu).view(-1)
+            Dx1 = netD(real_cpu).view(-1).detach()
             # Calculate loss on all-real batch
             errD_real = criterion(Dx1, Dx1_label)
 
             ## Test with all-fake batch
-            fake = netG(noise + real_cpu)
+            fake = netG(noise + real_cpu).detach()
             DGz1_label = torch.full((b_size,), fake_label, dtype=torch.float, device=device)
             # Classify all fake batch with D
-            DGz1 = netD(fake).view(-1)
+            DGz1 = netD(fake).view(-1).detach()
             # Calculate D's loss on the all-fake batch
             errD_fake = criterion(DGz1, DGz1_label)
 

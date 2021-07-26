@@ -19,7 +19,7 @@ def get_args():
     parser = argparse.ArgumentParser(description='Train GAN on hydro simulation data',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     
-    parser.add_argument('-e', '--epochs', metavar='E', type=int, default=1,
+    parser.add_argument('-e', '--epochs', metavar='E', type=int, default=5,
                         help='Number of epochs', dest='epochs')
     parser.add_argument('-b', '--batch-size', metavar='B', type=int, nargs='?', default=5,
                         help='Batch size', dest='b_size')
@@ -29,19 +29,19 @@ def get_args():
                         help='Learning rate for generator', dest='lrg')
     parser.add_argument('-s','--random-seed',metavar='RS',type=float,nargs='?',default=999,
                         help='Random seed', dest='manualSeed')
-    parser.add_argument('-trd','--traintotal',type=int,default=10000,
+    parser.add_argument('-trd','--traintotal',type=int,default=500,
                         help='total amount of files for training', dest='traintotal')
-    parser.add_argument('-ted','--testtotal',type=int,default=500,
+    parser.add_argument('-ted','--testtotal',type=int,default=10,
                         help='total amount of files for testing', dest='testtotal')
     parser.add_argument('-vf','--validate-frequency',type=int,default=50,
                         help='print every # iteration',dest='validate_every')
     parser.add_argument('-wfid','--weight-fid',type=float,default=10,
                         help='weight for data fidelity loss in the error of G net',dest='weight_fid')
-    parser.add_argument('-g','--gnet-path',type=str,default=None,
+    parser.add_argument('-g','--gnet-path',type=str,default='/home/huangz78/checkpoints/netG_warmup.pth',
                         help='path to load checkpoints of generator network', dest='gpath')
     parser.add_argument('-d','--dnet-path',type=str,default=None,
                         help='path to laod checkpoints of discriminator network',dest='dpath')
-    parser.add_argument('-dup','--update-d-every',type=int,default=1,
+    parser.add_argument('-dup','--update-d-every',type=int,default=5,
                         help='update d every # steps',dest='dup')
     parser.add_argument('-gup','--update-g-every',type=int,default=1,
                         help='update g every # steps',dest='gup')
@@ -102,5 +102,10 @@ if __name__ == '__main__':
               img_size=img_size,\
               num_epochs=args.epochs,b_size=args.b_size,\
               weight_fid=args.weight_fid,\
-              print_every=10,validate_every=args.validate_every,make_plot=False,fileexp_ind=fileexp_ind,sigmoid_on=False,\
-              ngpu=ngpu,manual_seed=args.manualSeed,save_cp=True)
+              print_every=10,validate_every=args.validate_every,\
+              make_plot=False,\
+              fileexp_ind=fileexp_ind,\
+              sigmoid_on=False,\
+              ngpu=ngpu,\
+              manual_seed=args.manualSeed,\
+              save_cp=True)

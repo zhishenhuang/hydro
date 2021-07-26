@@ -10,13 +10,26 @@ import os,sys
 import matplotlib.pyplot as plt
 from models.utils import validate,illustrate,visualization, noise_generate, Nrmse, l1
 
+def compute_mass(imgs,Rrho=1,Rz=1):
+    '''
+    computing through cylindrical coordinate
+    input  --- imgs: [#batch, #channel, #dep, #heg, #wid]
+    output --- mass: [#batch, #dep]
+    '''
+    drho = Rrho / imgs.shape[3]
+    dz   = Rz   / imgs.shape[4]
+    metrics = torch.linspace(0,Rrho,imgs.shape[4]).repeat(imgs.shape[3],1)
+    integrand = imgs * metrics
+    mass = 2*np.pi * torch.sum(integrand,dim=(3,4)) * drho * dz 
+    return torch.squeeze(mass)
+
 def gan_train(netG,netD,lrd=1e-5,lrg=2e-5,beta1=0.5,\
               traintotal=500,testtotal=10,num_epochs=5,\
               weight_fid=1-1e-3,dep=8,b_size=5,update_D_every=10,update_G_every=1,\
               fileexp_ind=5010,sigmoid_on=False,\
               print_every=10,validate_every=100,\
               img_size=320,ngpu=0,manual_seed=999,device="cpu",\
-              save_cp=False,make_plot=True,):
+              save_cp=False,make_plot=False):
     '''
     netG             : input Generative network
     netD             : input Discriminative network
@@ -68,8 +81,10 @@ def gan_train(netG,netD,lrd=1e-5,lrg=2e-5,beta1=0.5,\
 #     img_list = []
     G_losses   = []; D_losses = []; val_losses = [] 
     nrmse_val  = []; l1_val   = []; nrmse_train = list([]); l1_train = list([])
-    criterion  = nn.BCELoss() if sigmoid_on else nn.BCEWithLogitsLoss()
-    fidelity_loss = nn.L1Loss()
+#     criterion  = nn.BCELoss() if sigmoid_on else nn.BCEWithLogitsLoss()
+    criterion = nn.MSELoss()
+#     fidelity_loss = nn.L1Loss()
+    fidelity_loss = nn.MSELoss()
     optimizerD = optim.Adam(netD.parameters(), lr=lrd, betas=(beta1, 0.999))
 #     schedulerD = ReduceLROnPlateau(optimizerD, 'min',factor=0.8,patience=20)
     optimizerG = optim.Adam(netG.parameters(), lr=lrg, betas=(beta1, 0.999))
@@ -170,7 +185,11 @@ def gan_train(netG,netD,lrd=1e-5,lrg=2e-5,beta1=0.5,\
                     DGz2 = netD(fake).view(-1)
                     D_G_z2 = DGz2.mean().item() if sigmoid_on else torch.sigmoid(DGz2).mean().item()
                     # Calculate G's loss based on this output
-                    errG = criterion(DGz2, DGz2_label) + weight_fid * fidelity_loss(fake, real_cpu)
+#                     errG = criterion(DGz2, DGz2_label) + weight_fid * fidelity_loss(fake, real_cpu)
+                    mass_fake = compute_mass(fake)
+                    mass_fake.retain_grad()
+                    mass_real = compute_mass(real_cpu)
+                    errG = criterion(DGz2, DGz2_label) + weight_fid * fidelity_loss(mass_fake, mass_real) # Jul 23, add the mass conservation term
                     # Calculate gradients for G
                     netG.zero_grad()
                     errG.backward()
@@ -191,35 +210,39 @@ def gan_train(netG,netD,lrd=1e-5,lrg=2e-5,beta1=0.5,\
                                  g_loss=G_losses,d_loss=D_losses,val_loss=val_losses,\
                                  nrmse_train=nrmse_train,l1_train=l1_train,\
                                  nrmse_val=nrmse_val,l1_val=l1_val)
-                if global_step%validate_every==0 :
-                    val_loss,nrmse,l1err = validate(testfiles,netD,netG,dep=dep,batchsize=3,\
-                                                    seed=manual_seed,img_size=img_size,\
-                                                    sigmoid_on=sigmoid_on,device=device,testfile_num=testtotal)
-                    val_losses.append(val_loss.item())
-                    nrmse_val.append(nrmse.item()); l1_val.append(l1err.item())
-                    print('validation loss = {}, average nrmse = {}, average l1 err = {}'.format( val_loss.item(),nrmse.item(),l1err.item() ))
+                global_step += 1 
+#                 if global_step%validate_every==0 :
+            ############################
+            # Validation
+            ############################
+            val_loss,nrmse,l1err = validate(testfiles,netD,netG,dep=dep,batchsize=3,\
+                                            seed=manual_seed,img_size=img_size,\
+                                            sigmoid_on=sigmoid_on,device=device,testfile_num=testtotal)
+            val_losses.append(val_loss.item())
+            nrmse_val.append(nrmse.item()); l1_val.append(l1err.item())
+            print('validation loss = {}, average nrmse = {}, average l1 err = {}'.format( val_loss.item(),nrmse.item(),l1err.item() ))
 #                     schedulerD.step(val_loss)
 #                     schedulerG.step()
-                    if make_plot:
-                        fakeexp = netG(noiseexp + dynexp)
-                        illustrate(fakeexp) # should show a fixed set of images instead of the set under processing!
-                        visualization(G_losses,D_losses,val_losses,nrmse)                
-                    if save_cp:
-                        dir_checkpoint = '/home/huangz78/checkpoints/'
-                        try:
-                            os.mkdir(dir_checkpoint)
-                            print('Created checkpoint directory')
-                #                 logging.info('Created checkpoint directory')
-                        except OSError:
-                            pass
-                        torch.save({'model_state_dict': netD.state_dict()}, dir_checkpoint + 'netD.pth')
-                        torch.save({'model_state_dict': netG.state_dict()}, dir_checkpoint + 'netG.pth')
-                        np.savez('/home/huangz78/checkpoints/gan_train_track.npz',\
-                                 g_loss=G_losses,d_loss=D_losses,val_loss=val_losses,\
-                                 nrmse_train=nrmse_train,l1_train=l1_train,\
-                                 nrmse_val=nrmse_val,l1_val=l1_val)
-                        print(f'\t Checkpoint saved at epoch {epoch + 1}, iteration {global_step}!')
-                global_step += 1
+#             if make_plot:
+#                 fakeexp = netG(noiseexp + dynexp)
+#                 illustrate(fakeexp) # should show a fixed set of images instead of the set under processing!
+#                 visualization(G_losses,D_losses,val_losses,nrmse)                
+            if save_cp:
+                dir_checkpoint = '/home/huangz78/checkpoints/'
+                try:
+                    os.mkdir(dir_checkpoint)
+                    print('Created checkpoint directory')
+        #                 logging.info('Created checkpoint directory')
+                except OSError:
+                    pass
+                torch.save({'model_state_dict': netD.state_dict()}, dir_checkpoint + 'netD.pth')
+                torch.save({'model_state_dict': netG.state_dict()}, dir_checkpoint + 'netG.pth')
+                np.savez('/home/huangz78/checkpoints/gan_train_track.npz',\
+                         g_loss=G_losses,d_loss=D_losses,val_loss=val_losses,\
+                         nrmse_train=nrmse_train,l1_train=l1_train,\
+                         nrmse_val=nrmse_val,l1_val=l1_val)
+                print(f'\t Checkpoint saved at epoch {epoch + 1}, iteration {global_step}!')
+                
         except KeyboardInterrupt: # need debug
             print('Keyboard Interrupted! Exit~')
             if save_cp:
