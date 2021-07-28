@@ -206,7 +206,7 @@ def G_warmup(netG,lr=1e-5,beta1=0.5,\
                 #                 logging.info('Created checkpoint directory')
                         except OSError:
                             pass
-                        torch.save({'model_state_dict': netG.state_dict()}, dir_checkpoint + 'netG_warmup.pth')
+                        torch.save({'model_state_dict': netG.state_dict()}, dir_checkpoint + 'netG_warmup.pt')
                         np.savez('/home/huangz78/checkpoints/gnet_warmup_track.npz',\
                                  g_loss=G_losses,val_loss=val_losses,\
                                  nrmse_train=nrmse_train,l1_train=l1_train,\
@@ -217,7 +217,7 @@ def G_warmup(netG,lr=1e-5,beta1=0.5,\
             print('Keyboard Interrupted! Exit~')
             if save_cp:
                 dir_checkpoint = '/home/huangz78/checkpoints/'
-                torch.save({'model_state_dict': netG.state_dict()}, dir_checkpoint + 'netG_warmup.pth')
+                torch.save({'model_state_dict': netG.state_dict()}, dir_checkpoint + 'netG_warmup.pt')
                 np.savez('/home/huangz78/checkpoints/gnet_warmup_track.npz',\
                                  g_loss=G_losses,val_loss=val_losses,\
                                  nrmse_train=nrmse_train,l1_train=l1_train,\

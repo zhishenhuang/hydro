@@ -19,9 +19,9 @@ def get_args():
     parser = argparse.ArgumentParser(description='Train GAN on hydro simulation data',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     
-    parser.add_argument('-e', '--epochs', metavar='E', type=int, default=5,
+    parser.add_argument('-e', '--epochs', metavar='E', type=int, default=20,
                         help='Number of epochs', dest='epochs')
-    parser.add_argument('-b', '--batch-size', metavar='B', type=int, nargs='?', default=5,
+    parser.add_argument('-b', '--batch-size', metavar='B', type=int, nargs='?', default=2,
                         help='Batch size', dest='b_size')
     parser.add_argument('-lrd', '--learning-rate-d', metavar='LRD', type=float, nargs='?', default=1e-4,
                         help='Learning rate for discriminator', dest='lrd')
@@ -29,7 +29,7 @@ def get_args():
                         help='Learning rate for generator', dest='lrg')
     parser.add_argument('-s','--random-seed',metavar='RS',type=float,nargs='?',default=999,
                         help='Random seed', dest='manualSeed')
-    parser.add_argument('-trd','--traintotal',type=int,default=500,
+    parser.add_argument('-trd','--traintotal',type=int,default=100,
                         help='total amount of files for training', dest='traintotal')
     parser.add_argument('-ted','--testtotal',type=int,default=10,
                         help='total amount of files for testing', dest='testtotal')
@@ -41,10 +41,12 @@ def get_args():
                         help='path to load checkpoints of generator network', dest='gpath')
     parser.add_argument('-d','--dnet-path',type=str,default=None,
                         help='path to laod checkpoints of discriminator network',dest='dpath')
-    parser.add_argument('-dup','--update-d-every',type=int,default=5,
+    parser.add_argument('-dup','--update-d-every',type=int,default=10,
                         help='update d every # steps',dest='dup')
     parser.add_argument('-gup','--update-g-every',type=int,default=1,
                         help='update g every # steps',dest='gup')
+    parser.add_argument('-sigmoid','--sigmoid-on',type=str,default='True',
+                        help='sigmoid on',dest='sigmoid_on')
     
     return parser.parse_args()
 
@@ -59,6 +61,11 @@ if __name__ == '__main__':
     random.seed(args.manualSeed)
     torch.manual_seed(args.manualSeed)
     
+    if args.sigmoid_on == 'True':
+        args.sigmoid_on = True
+    elif args.sigmoid_on == 'False':
+        args.sigmoid_on = False
+    
     datapath = '/mnt/shared_b/data/hydro_simulations/data/'
     ncfiles = list([])
     for file in os.listdir(datapath):
@@ -66,6 +73,7 @@ if __name__ == '__main__':
             ncfiles.append(file)
     print('Total amount of files:', len(ncfiles))
     img_size = 320
+    resize_option = False
     dep = 8
     traintotal  = args.traintotal
     testtotal   = args.testtotal
@@ -78,7 +86,7 @@ if __name__ == '__main__':
     ### initialization of two networks
     ############################
 #     dnet = Discriminator(ngpu,sigmoid_on=False).to(device)    
-    dnet = Discriminator(ngpu,ndf=8,sigmoid_on=False).to(device)
+    dnet = Discriminator(ngpu,ndf=8,sigmoid_on=False,imgsize=(dep,img_size,img_size)).to(device)
     if args.dpath is None:
         # Apply the weights_init function to randomly initialize all weights
         #  to mean=0, stdev=0.2.
@@ -91,7 +99,7 @@ if __name__ == '__main__':
     gnet = ResidualUNet3D(1,1,num_levels=4,is_segmentation=False,final_sigmoid=False)
     if args.gpath is not None:
         checkpoint = torch.load(args.gpath)
-        gnet.load_state_dict(checkpoint['model_state_dict'])
+        gnet.load_state_dict(checkpoint['model_state_dict'],strict=True)
         print(f'G net loaded from {args.gpath} successfully!\n')
     
     ############################
@@ -105,7 +113,7 @@ if __name__ == '__main__':
               print_every=10,validate_every=args.validate_every,\
               make_plot=False,\
               fileexp_ind=fileexp_ind,\
-              sigmoid_on=False,\
+              sigmoid_on=args.sigmoid_on,\
               ngpu=ngpu,\
               manual_seed=args.manualSeed,\
-              save_cp=True)
+              save_cp=True,resize_option=resize_option)

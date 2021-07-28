@@ -14,16 +14,16 @@ def Nrmse(x,xstar):
 def l1(x,xstar):
     return torch.norm(x-xstar,p=1)/torch.norm(xstar,p=1)
 
-def noise_generate(frame, fl=0.006, fr=0.0179, cl=0.06,cr=0.21, sigma=1e-1, f=0.01, c=0.1 ,mode='linear' ):
+def noise_generate(frame, fl=0.006, fr=0.0179, f=0.01, c=0.1, cl=0.06,cr=0.21, sigma=1e-1, scaling=1,mode='linear' ):
     if mode == 'linear':
-        factor = np.random.uniform(fl,fr,1)
-        const  = np.random.uniform(cl,cr,1)
+        factor = np.random.uniform(fl,fr,1) * scaling
+        const  = np.random.uniform(cl,cr,1) * scaling
         noise  = frame * factor + const
     elif mode == 'const':
-        noise = frame * f + c
+        noise = (frame * f + c) * scaling
     elif mode == 'const_rand':
         c     = np.random.uniform(cl,cr,1)
-        noise = np.ones(frame.shape) * c
+        noise = np.ones(frame.shape) * c * scaling
     elif mode == 'gaussian':
         noise_mag = sigma*np.max(np.abs(frame.flatten()))
         noise = noise_mag*np.random.randn(frame.shape[0],frame.shape[1])
@@ -143,10 +143,6 @@ def visualization(G_losses,D_losses,val_losses,nrmse_=None,l1err_=None,linferr_=
         plt.tick_params(axis='x', labelsize='large')
         plt.tick_params(axis='y', labelsize='large')   
         plt.show()
-    
-datapath = '/mnt/shared_b/data/hydro_simulations/data/'
-real_label = 1.
-fake_label = 0.
 
 def aver_mse(fake,real):
     '''
@@ -177,75 +173,6 @@ def aver_linf(fake,real):
     reldev   = torch.max(reldev,dim=2)[0]
     nlinferr = torch.sum(reldev,dim=(0))/fake.shape[0]
     return nlinferr
-    
-def validate(testfiles,netD,netG,dep=8,batchsize=2,seed=0,img_size=320, \
-             device="cpu",sigmoid_on=False,testfile_num=100):
-#     filenum = len(testfiles)
-    batchsize = min(testfile_num,batchsize)
-    random.seed(seed)
-    torch.manual_seed(seed)
-    
-    # set the model in eval mode
-    netD.eval()
-    netG.eval()
-    eval_score = 0; nrmse = 0; nl1err = 0; nlinferr = 0
-    # evaluate on validation set
-    fileind = 0
-    criterion = nn.BCELoss() if sigmoid_on else nn.BCEWithLogitsLoss()
-    normalize_factor = 50
-    batch_step = 0
-    with torch.no_grad():
-        while fileind < testfile_num:
-            dyn   = np.zeros((batchsize,1,dep,256,256))
-            noise = np.zeros((batchsize,1,dep,256,256))
-            bfile = 0
-            while bfile < batchsize:
-                filename = testfiles[fileind+bfile]
-                sim = xr.open_dataarray(datapath+filename)        
-                for t in range(dep):
-                    dyn[bfile,0,t,:,:] = resize(sim.isel(t=t)[:img_size,:img_size].values,(256,256),anti_aliasing=True)
-                maxval_tmp = np.max( np.abs(dyn[bfile,0,:,:,:]).flatten() ) # normalize each File
-                if maxval_tmp > normalize_factor:
-                    bfile -= 1
-                    fileind += 1
-                else:
-                    dyn[bfile,0,:,:,:] = dyn[bfile,0,:,:,:] / normalize_factor
-                    noise[bfile,0,:,:,:] = noise_generate(dyn[bfile,0,:,:,:],mode='const')
-    #             for t in range(dep): # different noise for each frame when using a 'for' loop
-    #                 noise[bfile,0,t,:,:] = noise_generate(dyn[bfile,0,t,:,:], mode='linear')
-                sim.close()
-                bfile += 1
-            fileind += batchsize
-            batch_step += 1
-
-            dyn = torch.tensor(dyn).to(torch.float); noise = torch.tensor(noise).to(torch.float)
-            real_cpu = dyn.to(device)
-            b_size = real_cpu.size(0)
-
-            ## Test with all-real batch
-            Dx1_label = torch.full((b_size,), real_label, dtype=torch.float, device=device)
-            # Forward pass real batch through D
-            Dx1 = netD(real_cpu).view(-1).detach()
-            # Calculate loss on all-real batch
-            errD_real = criterion(Dx1, Dx1_label)
-
-            ## Test with all-fake batch
-            fake = netG(noise + real_cpu).detach()
-            DGz1_label = torch.full((b_size,), fake_label, dtype=torch.float, device=device)
-            # Classify all fake batch with D
-            DGz1 = netD(fake).view(-1).detach()
-            # Calculate D's loss on the all-fake batch
-            errD_fake = criterion(DGz1, DGz1_label)
-
-            eval_score = eval_score + (errD_real + errD_fake)
-            nrmse      = nrmse      + aver_mse(fake,real_cpu)  * fake.shape[0]
-            nl1err     = nl1err     + aver_l1(fake,real_cpu)   * fake.shape[0]
-#             nlinferr   = nlinferr   + aver_linf(fake,real_cpu) * fake.shape[0]
-    
-    # set the model back to training mode
-    netD.train()
-    netG.train()
-    return eval_score/(batch_step*batchsize), nrmse/(batch_step*batchsize), nl1err/(batch_step*batchsize) #, nlinferr/filenum
 
 import importlib
 import logging

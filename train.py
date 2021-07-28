@@ -8,7 +8,95 @@ import random
 import xarray as xr
 import os,sys
 import matplotlib.pyplot as plt
-from models.utils import validate,illustrate,visualization, noise_generate, Nrmse, l1
+from models.utils import *
+
+real_label = 1.
+fake_label = 0.
+datapath = '/mnt/shared_b/data/hydro_simulations/data/'
+
+def load_data_batch(fileind,trainfiles,b_size=5,dep=8,img_size=320,resize_option=False,noise_mode='const_rand',normalize_factor=50):
+    traintotal = len(trainfiles)   
+    current_b_size = min(b_size,traintotal-fileind)
+    if not resize_option:
+        dyn = np.zeros((current_b_size,1,dep,img_size,img_size))
+    else:
+        dyn = np.zeros((current_b_size,1,dep,256,256))
+    noise = np.zeros(dyn.shape)
+    bfile = 0
+    while (bfile < current_b_size) and (fileind+bfile < traintotal):
+    # Format batch: prepare training data for D network
+        filename = trainfiles[fileind+bfile]
+        sim = xr.open_dataarray(datapath+filename)
+        for t in range(dep):
+            if not resize_option:
+                dyn[bfile,0,t,:,:] = sim.isel(t=t)[:img_size,:img_size].values
+            else:
+                dyn[bfile,0,t,:,:] = resize(sim.isel(t=t)[:img_size,:img_size].values,(256,256),anti_aliasing=True)
+        maxval_tmp = np.max( np.abs(dyn[bfile,0,:,:,:]).flatten() ) # normalize each File
+        if maxval_tmp > normalize_factor:
+            bfile -= 1
+            fileind += 1
+        else:                        
+            dyn[bfile,0,:,:,:] = dyn[bfile,0,:,:,:] / normalize_factor
+            noise[bfile,0,:,:,:] = noise_generate(dyn[bfile,0,:,:,:],mode=noise_mode,scaling=dyn[bfile,0,:,:,:].max())
+#                         for t in range(dep): # different noise for each frame when using a 'for' loop
+#                             noise[bfile,0,t,:,:] = noise_generate(dyn[bfile,0,t,:,:],mode='linear')
+        sim.close()
+        bfile += 1
+    return dyn, noise, current_b_size
+
+def validate(testfiles,netD,netG,dep=8,batchsize=2,seed=0,img_size=320, \
+             device="cpu",sigmoid_on=False,testfile_num=100,\
+             resize_option=False,noise_mode='const_rand',normalize_factor=50):
+#     filenum = len(testfiles)
+    batchsize = min(testfile_num,batchsize)
+    random.seed(seed)
+    torch.manual_seed(seed)
+    datapath = '/mnt/shared_b/data/hydro_simulations/data/'
+    real_label = 1.
+    fake_label = 0.
+    
+    # set the model in eval mode
+    netD.eval()
+    netG.eval()
+    eval_score = 0; nrmse = 0; nl1err = 0; nlinferr = 0
+    # evaluate on validation set
+    fileind = 0
+    criterion = nn.MSELoss() if sigmoid_on else nn.BCEWithLogitsLoss()
+    batch_step = 0
+    with torch.no_grad():
+        while fileind < testfile_num:
+            dyn, noise, b_size = load_data_batch(fileind,testfiles,b_size=batchsize,dep=dep,img_size=img_size,resize_option=resize_option,noise_mode=noise_mode,normalize_factor = normalize_factor)
+            fileind += batchsize
+            batch_step += 1
+
+            dyn = torch.tensor(dyn).to(torch.float); noise = torch.tensor(noise).to(torch.float)
+            real_cpu = dyn.to(device)
+#             b_size = real_cpu.size(0)
+            del dyn
+            ## Test with all-real batch
+            Dx1_label = torch.full((b_size,), real_label, dtype=torch.float, device=device)
+            # Forward pass real batch through D
+#             Dx1 = netD(real_cpu).view(-1).detach()
+            Dx1 = torch.sigmoid(netD(real_cpu)).view(-1).detach() if sigmoid_on else netD(real_cpu).view(-1).detach()
+            # Calculate loss on all-real batch
+            errD_real = criterion(Dx1, Dx1_label)
+
+            ## Test with all-fake batch
+            fake = netG(noise + real_cpu).detach()
+            DGz1_label = torch.full((b_size,), fake_label, dtype=torch.float, device=device)
+            # Classify all fake batch with D
+#             DGz1 = netD(fake).view(-1).detach()
+            DGz1 = torch.sigmoid(netD(fake)).view(-1).detach() if sigmoid_on else netD(fake).view(-1).detach()
+            # Calculate D's loss on the all-fake batch
+            errD_fake = criterion(DGz1, DGz1_label)
+
+            eval_score = eval_score + (errD_real + errD_fake)
+            nrmse      = nrmse      + aver_mse(fake,real_cpu)  * fake.shape[0]
+            nl1err     = nl1err     + aver_l1(fake,real_cpu)   * fake.shape[0]
+#             nlinferr   = nlinferr   + aver_linf(fake,real_cpu) * fake.shape[0]
+    return eval_score/(batch_step*batchsize), nrmse/(batch_step*batchsize), nl1err/(batch_step*batchsize) #, nlinferr/filenum
+
 
 def compute_mass(imgs,Rrho=1,Rz=1):
     '''
@@ -29,7 +117,8 @@ def gan_train(netG,netD,lrd=1e-5,lrg=2e-5,beta1=0.5,\
               fileexp_ind=5010,sigmoid_on=False,\
               print_every=10,validate_every=100,\
               img_size=320,ngpu=0,manual_seed=999,device="cpu",\
-              save_cp=False,make_plot=False):
+              save_cp=False,make_plot=False,\
+              resize_option=False,noise_mode='const_rand'):
     '''
     netG             : input Generative network
     netD             : input Discriminative network
@@ -79,10 +168,10 @@ def gan_train(netG,netD,lrd=1e-5,lrg=2e-5,beta1=0.5,\
     # Training Loop
     # Lists to keep track of progress
 #     img_list = []
-    G_losses   = []; D_losses = []; val_losses = [] 
-    nrmse_val  = []; l1_val   = []; nrmse_train = list([]); l1_train = list([])
+    G_losses  = []; D_losses = []; val_losses = [] 
+    nrmse_val = []; l1_val   = []; nrmse_train = list([]); l1_train = list([])
 #     criterion  = nn.BCELoss() if sigmoid_on else nn.BCEWithLogitsLoss()
-    criterion = nn.MSELoss()
+    criterion = nn.MSELoss() if sigmoid_on else nn.BCEWithLogitsLoss()
 #     fidelity_loss = nn.L1Loss()
     fidelity_loss = nn.MSELoss()
     optimizerD = optim.Adam(netD.parameters(), lr=lrd, betas=(beta1, 0.999))
@@ -94,47 +183,19 @@ def gan_train(netG,netD,lrd=1e-5,lrg=2e-5,beta1=0.5,\
 #     with torch.autograd.set_detect_anomaly(True):
     
     normalize_factor = 50
-    
-    fileexp  = ncfiles[fileexp_ind] # fix one file to observe the outcome of the generator
-    simexp   = xr.open_dataarray(datapath + fileexp)
-    dynexp   = np.zeros((1,1,dep,256,256))
-    noiseexp = np.zeros((1,1,dep,256,256)) # fix one set of dynamical frames for viewing
-    for t in range(dep):
-        dynexp[0,0,t,:,:] = resize(simexp.isel(t=t)[:img_size,:img_size].values,(256,256),anti_aliasing=True)
-#     normalize_factor   = np.max( np.abs(dynexp[0,0,:,:,:]).flatten() )
-    dynexp[0,0,:,:,:]  = dynexp[0,0,:,:,:] / normalize_factor
-    noiseexp = noise_generate(dynexp,mode='const_rand')
-#     for t in range(dep): # different noise for each frame when using a 'for' loop
-#         noiseexp[0,0,t,:,:] = noise_generate(dynexp[0,0,t,:,:],mode='linear') 
-    dynexp   = torch.tensor(dynexp).to(torch.float).to(device); noiseexp = torch.tensor(noiseexp).to(torch.float).to(device)
-    
+        
     for epoch in range(num_epochs):
         try:
             fileind = 0; global_step = 0; D_update_ind = 0; G_update_ind = 0
             while fileind < traintotal:
-                current_b_size = min(b_size,traintotal-fileind)
-                dyn = np.zeros((current_b_size,1,dep,256,256))
-                noise = np.zeros(dyn.shape)
-                bfile = 0
-                while (bfile < current_b_size) and (fileind+bfile < traintotal):
-                # Format batch: prepare training data for D network
-                    filename = trainfiles[fileind+bfile]
-                    sim = xr.open_dataarray(datapath+filename)
-                    for t in range(dep):
-                        dyn[bfile,0,t,:,:] = resize(sim.isel(t=t)[:img_size,:img_size].values,(256,256),anti_aliasing=True)
-                    maxval_tmp = np.max( np.abs(dyn[bfile,0,:,:,:]).flatten() ) # normalize each File
-                    if maxval_tmp > normalize_factor:
-                        bfile -= 1
-                        fileind += 1
-                    else:                        
-                        dyn[bfile,0,:,:,:] = dyn[bfile,0,:,:,:] / normalize_factor
-                        noise[bfile,0,:,:,:] = noise_generate(dyn[bfile,0,:,:,:],mode='const_rand')
-#                         for t in range(dep): # different noise for each frame when using a 'for' loop
-#                             noise[bfile,0,t,:,:] = noise_generate(dyn[bfile,0,t,:,:],mode='linear')
-                    sim.close()
-                    bfile += 1
+                # set the model back to training mode
+                netD.train()
+                netG.train()
+                
+                dyn, noise, current_b_size = load_data_batch(fileind,trainfiles,b_size=b_size,dep=dep,img_size=img_size,resize_option=resize_option,noise_mode=noise_mode,normalize_factor=normalize_factor)
                 dyn = torch.tensor(dyn).to(torch.float); noise = torch.tensor(noise).to(torch.float)
                 real_cpu = dyn.to(device)
+                del dyn
                 fileind += b_size
     #             b_size = real_cpu.size(0)
 
@@ -151,23 +212,25 @@ def gan_train(netG,netD,lrd=1e-5,lrg=2e-5,beta1=0.5,\
                     netD.zero_grad()
                     Dx1_label = torch.full((current_b_size,), real_label, dtype=torch.float, device=device)
                     # Forward pass real batch through D
-                    Dx1 = netD(real_cpu).view(-1)
+#                     Dx1 = netD(real_cpu).view(-1)
+                    Dx1 = torch.sigmoid(netD(real_cpu)).view(-1) if sigmoid_on else netD(real_cpu).view(-1)
                     # Calculate loss on all-real batch
                     errD_real = criterion(Dx1, Dx1_label)
                     # Calculate gradients for D in backward pass
                     errD_real.backward()
-                    D_x = Dx1.mean().item() if sigmoid_on else torch.sigmoid(Dx1).mean().item()
+                    D_x = Dx1.mean().item() 
 
                     ## Train with all-fake batch
                     DGz1_label = torch.full((current_b_size,), fake_label, dtype=torch.float, device=device)
         #                 label.fill_(fake_label)
                     # Classify all fake batch with D
-                    DGz1 = netD(fake.detach()).view(-1)
+#                     DGz1 = netD(fake.detach()).view(-1)
+                    DGz1 = torch.sigmoid(netD(fake.detach())).view(-1) if sigmoid_on else netD(fake.detach()).view(-1)
                     # Calculate D's loss on the all-fake batch
                     errD_fake = criterion(DGz1, DGz1_label)
                     # Calculate the gradients for this batch
                     errD_fake.backward(retain_graph=True)
-                    D_G_z1 = DGz1.mean().item() if sigmoid_on else torch.sigmoid(DGz1).mean().item()
+                    D_G_z1 = DGz1.mean().item() 
                     # Add the gradients from the all-real and all-fake batches
                     errD = errD_real + errD_fake
                     # Update D
@@ -182,10 +245,10 @@ def gan_train(netG,netD,lrd=1e-5,lrg=2e-5,beta1=0.5,\
                     DGz2_label = torch.full((current_b_size,), real_label, dtype=torch.float, device=device)
         #                 label.fill_(real_label)  # fake labels are real for generator cost
                     # Since we just updated D, perform another forward pass of all-fake batch through D
-                    DGz2 = netD(fake).view(-1)
-                    D_G_z2 = DGz2.mean().item() if sigmoid_on else torch.sigmoid(DGz2).mean().item()
+#                     DGz2 = netD(fake).view(-1)
+                    DGz2 = torch.sigmoid(netD(fake)).view(-1) if sigmoid_on else netD(fake).view(-1)
+                    D_G_z2 = DGz2.mean().item()
                     # Calculate G's loss based on this output
-#                     errG = criterion(DGz2, DGz2_label) + weight_fid * fidelity_loss(fake, real_cpu)
                     mass_fake = compute_mass(fake)
                     mass_fake.retain_grad()
                     mass_real = compute_mass(real_cpu)
@@ -215,18 +278,16 @@ def gan_train(netG,netD,lrd=1e-5,lrg=2e-5,beta1=0.5,\
             ############################
             # Validation
             ############################
-            val_loss,nrmse,l1err = validate(testfiles,netD,netG,dep=dep,batchsize=3,\
+            val_loss,nrmse,l1err = validate(testfiles,netD,netG,dep=dep,batchsize=2,\
                                             seed=manual_seed,img_size=img_size,\
-                                            sigmoid_on=sigmoid_on,device=device,testfile_num=testtotal)
+                                            sigmoid_on=sigmoid_on,device=device,testfile_num=testtotal,\
+                                            resize_option=resize_option,noise_mode=noise_mode,normalize_factor=normalize_factor)
             val_losses.append(val_loss.item())
             nrmse_val.append(nrmse.item()); l1_val.append(l1err.item())
             print('validation loss = {}, average nrmse = {}, average l1 err = {}'.format( val_loss.item(),nrmse.item(),l1err.item() ))
 #                     schedulerD.step(val_loss)
 #                     schedulerG.step()
-#             if make_plot:
-#                 fakeexp = netG(noiseexp + dynexp)
-#                 illustrate(fakeexp) # should show a fixed set of images instead of the set under processing!
-#                 visualization(G_losses,D_losses,val_losses,nrmse)                
+                
             if save_cp:
                 dir_checkpoint = '/home/huangz78/checkpoints/'
                 try:
@@ -235,8 +296,8 @@ def gan_train(netG,netD,lrd=1e-5,lrg=2e-5,beta1=0.5,\
         #                 logging.info('Created checkpoint directory')
                 except OSError:
                     pass
-                torch.save({'model_state_dict': netD.state_dict()}, dir_checkpoint + 'netD.pth')
-                torch.save({'model_state_dict': netG.state_dict()}, dir_checkpoint + 'netG.pth')
+                torch.save({'model_state_dict': netD.state_dict()}, dir_checkpoint + 'netD.pt')
+                torch.save({'model_state_dict': netG.state_dict()}, dir_checkpoint + 'netG.pt')
                 np.savez('/home/huangz78/checkpoints/gan_train_track.npz',\
                          g_loss=G_losses,d_loss=D_losses,val_loss=val_losses,\
                          nrmse_train=nrmse_train,l1_train=l1_train,\
@@ -247,8 +308,8 @@ def gan_train(netG,netD,lrd=1e-5,lrg=2e-5,beta1=0.5,\
             print('Keyboard Interrupted! Exit~')
             if save_cp:
                 dir_checkpoint = '/home/huangz78/checkpoints/'
-                torch.save({'model_state_dict': netD.state_dict()}, dir_checkpoint + 'netD.pth')
-                torch.save({'model_state_dict': netG.state_dict()}, dir_checkpoint + 'netG.pth')
+                torch.save({'model_state_dict': netD.state_dict()}, dir_checkpoint + 'netD.pt')
+                torch.save({'model_state_dict': netG.state_dict()}, dir_checkpoint + 'netG.pt')
                 np.savez('/home/huangz78/checkpoints/gan_train_track.npz',\
                                  g_loss=G_losses,d_loss=D_losses,val_loss=val_losses,\
                                  nrmse_train=nrmse_train,l1_train=l1_train,\
