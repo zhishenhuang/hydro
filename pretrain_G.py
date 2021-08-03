@@ -8,11 +8,13 @@ import random
 import xarray as xr
 import os,sys
 import matplotlib.pyplot as plt
-from models.utils import illustrate,visualization, noise_generate, Nrmse, l1, aver_mse, aver_l1
+from models.utils import *
 
 
-def validate(testfiles,netG,dep=8,batchsize=5,seed=0,img_size=320, \
-             device="cpu",testfile_num=100,criterion=nn.L1Loss()):
+def validate(testfiles,netG,dep=8,batchsize=2,seed=0,img_size=320, \
+             device="cpu",testfile_num=100,\
+             resize_option=False,noise_mode='const_rand',\
+             normalize_factor=50,criterion=nn.L1Loss()):
 #     filenum = len(testfiles)
     batchsize = min(testfile_num,batchsize)
     random.seed(seed)
@@ -27,32 +29,15 @@ def validate(testfiles,netG,dep=8,batchsize=5,seed=0,img_size=320, \
     batch_step = 0
     with torch.no_grad():
         while fileind < testfile_num:
-            dyn   = np.zeros((batchsize,1,dep,256,256))
-            noise = np.zeros((batchsize,1,dep,256,256))
-            bfile = 0
-            while bfile < batchsize:
-                filename = testfiles[fileind+bfile]
-                sim = xr.open_dataarray(datapath+filename)        
-                for t in range(dep):
-                    dyn[bfile,0,t,:,:] = resize(sim.isel(t=t)[:img_size,:img_size].values,(256,256),anti_aliasing=True)
-                maxval_tmp = np.max( np.abs(dyn[bfile,0,:,:,:]).flatten() ) # normalize each File
-                if maxval_tmp > normalize_factor:
-                    bfile -= 1
-                    fileind += 1
-                else:
-                    dyn[bfile,0,:,:,:] = dyn[bfile,0,:,:,:] / normalize_factor
-                    noise[bfile,0,:,:,:] = noise_generate(dyn[bfile,0,:,:,:],mode='const_rand')
-                sim.close()
-                bfile += 1
+            dyn, noise, _ = load_data_batch(fileind,testfiles,b_size=batchsize,dep=dep,img_size=img_size,resize_option=resize_option,noise_mode=noise_mode,normalize_factor = normalize_factor)
             fileind += batchsize
             batch_step += 1
 
             dyn      = torch.tensor(dyn).to(torch.float); noise = torch.tensor(noise).to(torch.float)
             real_cpu = dyn.to(device)
-            b_size   = real_cpu.size(0)
 
             ## Test with all-fake batch
-            fake       = netG(noise + real_cpu)
+            fake       = netG(noise + real_cpu).detach()
             errG_fake  = criterion(fake, real_cpu)
 
             eval_score = eval_score + errG_fake
@@ -63,13 +48,13 @@ def validate(testfiles,netG,dep=8,batchsize=5,seed=0,img_size=320, \
     netG.train()
     return eval_score/(batch_step*batchsize), nrmse/(batch_step*batchsize), nl1err/(batch_step*batchsize) #, nlinferr/filenum
 
-def G_warmup(netG,lr=1e-5,beta1=0.5,\
+def G_warmup(netG,netG_cmp,lr=1e-5,beta1=0.5,\
               traintotal=500,testtotal=10,num_epochs=5,\
-              dep=8,b_size=5,\
-              fileexp_ind=5010,\
+              dep=8,b_size=5,weight_fid=10,\
               print_every=10,validate_every=100,\
               img_size=320,ngpu=0,manual_seed=999,device="cpu",\
-              save_cp=False,make_plot=False):
+              save_cp=False,make_plot=False,\
+              noise_mode='const_rand',resize_option = False):
     '''
     netG             : input Generative network
     lr               : learning rate for G network
@@ -83,7 +68,6 @@ def G_warmup(netG,lr=1e-5,beta1=0.5,\
     save_cp          : whether to save models
     print_every      : print every this many iterations
     make_plot        : whether to show learning loss curves and plot sample denoised frames
-    fileexp_ind      : the index of the fixed image file for illustrating performance of G network
     sigmoid_on       : whether to add a sigmoid layer to the output of D network
     
     img_size         : clip this size from the original image files in the hydro data, default value 320
@@ -92,7 +76,6 @@ def G_warmup(netG,lr=1e-5,beta1=0.5,\
     
     '''
     
-
     device = torch.device("cuda:0" if (torch.cuda.is_available() and ngpu > 0) else "cpu")
     datapath = '/mnt/shared_b/data/hydro_simulations/data/'
     ncfiles = list([])
@@ -110,53 +93,24 @@ def G_warmup(netG,lr=1e-5,beta1=0.5,\
     # Training Loop
     # Lists to keep track of progress
 #     img_list = []
-    G_losses   = []; val_losses = [] 
-    nrmse_val  = []; l1_val   = []; nrmse_train = list([]); l1_train = list([])
+    G_losses   = []; val_losses = []; val_losses_cmp = [] 
+    nrmse_val  = []; l1_val   = []
+    nrmse_train = list([]); l1_train = list([])
+    nrmse_val_cmp = []; l1_val_cmp = []
     
     fidelity_loss = nn.L1Loss()
+#     fidelity_loss = nn.MSELoss()
     
     optimizerG = optim.Adam(netG.parameters(), lr=lr, betas=(beta1, 0.999))
-    schedulerG = StepLR(optimizerG, step_size=100, gamma=0.8)
+    schedulerG = StepLR(optimizerG, step_size=100, gamma=0.9)
     print("Starting Training Loop...")
     
     normalize_factor = 50
-    
-    fileexp  = ncfiles[fileexp_ind] # fix one file to observe the outcome of the generator
-    simexp   = xr.open_dataarray(datapath + fileexp)
-    dynexp   = np.zeros((1,1,dep,256,256))
-    noiseexp = np.zeros((1,1,dep,256,256)) # fix one set of dynamical frames for viewing
-    for t in range(dep):
-        dynexp[0,0,t,:,:] = resize(simexp.isel(t=t)[:img_size,:img_size].values,(256,256),anti_aliasing=True)
-#     normalize_factor   = np.max( np.abs(dynexp[0,0,:,:,:]).flatten() )
-    dynexp[0,0,:,:,:]  = dynexp[0,0,:,:,:] / normalize_factor
-    noiseexp = noise_generate(dynexp,mode='const_rand')
-    
-    dynexp   = torch.tensor(dynexp).to(torch.float).to(device)
-    noiseexp = torch.tensor(noiseexp).to(torch.float).to(device)
-    
     for epoch in range(num_epochs):
         try:
             fileind = 0; global_step = 0
             while fileind < traintotal:
-                current_b_size = min(b_size,traintotal-fileind)
-                dyn = np.zeros((current_b_size,1,dep,256,256))
-                noise = np.zeros(dyn.shape)
-                bfile = 0
-                while (bfile < current_b_size) and (fileind+bfile < traintotal):
-                # Format batch: prepare training data for G network
-                    filename = trainfiles[fileind+bfile]
-                    sim = xr.open_dataarray(datapath+filename)
-                    for t in range(dep):
-                        dyn[bfile,0,t,:,:] = resize(sim.isel(t=t)[:img_size,:img_size].values,(256,256),anti_aliasing=True)
-                    maxval_tmp = np.max( np.abs(dyn[bfile,0,:,:,:]).flatten() ) # normalize each File
-                    if maxval_tmp > normalize_factor:
-                        bfile -= 1
-                        fileind += 1
-                    else:                        
-                        dyn[bfile,0,:,:,:] = dyn[bfile,0,:,:,:] / normalize_factor
-                        noise[bfile,0,:,:,:] = noise_generate(dyn[bfile,0,:,:,:],mode='const_rand')
-                    sim.close()
-                    bfile += 1
+                dyn, noise, _ = load_data_batch(fileind,trainfiles,b_size=b_size,dep=dep,img_size=img_size,resize_option=resize_option,noise_mode=noise_mode,normalize_factor=normalize_factor)
                 dyn      = torch.tensor(dyn).to(torch.float); noise = torch.tensor(noise).to(torch.float)
                 real_cpu = dyn.to(device)
                 fileind += b_size
@@ -168,10 +122,12 @@ def G_warmup(netG,lr=1e-5,beta1=0.5,\
                 print(f"[{global_step}][{epoch+1}/{num_epochs}][{fileind}/{traintotal}]: l2err = {l2err_tmp},  l1err = {l1err_tmp}")
                 ############################
                 # (2) Update G network: maximize log(D(G(z)))
-                ############################
-                    
+                ############################                    
                 # Calculate G's loss based on this output
-                errG = fidelity_loss(fake, real_cpu)
+                mass_fake = compute_mass(fake)
+                mass_fake.retain_grad()
+                mass_real = compute_mass(real_cpu)
+                errG = fidelity_loss(fake, real_cpu) + weight_fid * fidelity_loss(mass_fake, mass_real)
                 # Calculate gradients for G
                 netG.zero_grad()
                 errG.backward()
@@ -189,35 +145,49 @@ def G_warmup(netG,lr=1e-5,beta1=0.5,\
                                  g_loss=G_losses,val_loss=val_losses,\
                                  nrmse_train=nrmse_train,l1_train=l1_train,\
                                  nrmse_val=nrmse_val,l1_val=l1_val)
-                if global_step%validate_every==0 :
-                    val_loss,nrmse,l1err = validate(testfiles,netG,criterion=fidelity_loss,dep=dep,batchsize=3,\
-                                                    seed=manual_seed,img_size=img_size,\
-                                                    device=device,testfile_num=testtotal)
-                    val_losses.append(val_loss.item())
-                    nrmse_val.append(nrmse.item()); l1_val.append(l1err.item())
-                    print('validation loss = {}, average nrmse = {}, average l1 err = {}'.format( val_loss.item(),nrmse.item(),l1err.item() ))
-                    schedulerG.step()
-                           
-                    if save_cp:
-                        dir_checkpoint = '/home/huangz78/checkpoints/'
-                        try:
-                            os.mkdir(dir_checkpoint)
-                            print('Created checkpoint directory')
-                #                 logging.info('Created checkpoint directory')
-                        except OSError:
-                            pass
-                        torch.save({'model_state_dict': netG.state_dict()}, dir_checkpoint + 'netG_warmup.pt')
-                        np.savez('/home/huangz78/checkpoints/gnet_warmup_track.npz',\
-                                 g_loss=G_losses,val_loss=val_losses,\
-                                 nrmse_train=nrmse_train,l1_train=l1_train,\
-                                 nrmse_val=nrmse_val,l1_val=l1_val)
-                        print(f'\t Checkpoint saved at epoch {epoch + 1}, iteration {global_step}!')
                 global_step += 1
+           ############################
+           # Validation
+           ############################
+            val_loss,nrmse,l1err = validate(testfiles,netG,dep=dep,batchsize=2,\
+                                            seed=manual_seed,img_size=img_size,\
+                                            device=device,testfile_num=testtotal,\
+                                            resize_option=resize_option,noise_mode=noise_mode,\
+                                            normalize_factor=normalize_factor,\
+                                            criterion=fidelity_loss)
+            val_loss_cmp,nrmse_cmp,l1err_cmp = validate(testfiles,netG_cmp,dep=dep,batchsize=2,\
+                                            seed=manual_seed,img_size=img_size,\
+                                            device=device,testfile_num=testtotal,\
+                                            resize_option=resize_option,noise_mode=noise_mode,\
+                                            normalize_factor=normalize_factor,\
+                                            criterion=fidelity_loss)
+            val_losses.append(val_loss.item())
+            nrmse_val.append(nrmse.item()); l1_val.append(l1err.item())
+            val_losses_cmp.append(val_loss_cmp.item())
+            nrmse_val_cmp.append(nrmse_cmp.item()); l1_val_cmp.append(l1err_cmp.item())
+            print('validation loss = {}, average nrmse = {}, average l1 err = {}'.format( val_loss.item(),nrmse.item(),l1err.item() ))      
+            schedulerG.step()
+            if save_cp:
+                dir_checkpoint = '/home/huangz78/checkpoints/'
+                try:
+                    os.mkdir(dir_checkpoint)
+                    print('Created checkpoint directory')
+        #                 logging.info('Created checkpoint directory')
+                except OSError:
+                    pass
+                torch.save({'model_state_dict': netG.state_dict()}, dir_checkpoint + 'netG_warmup_masspenned.pt')
+                np.savez('/home/huangz78/checkpoints/gnet_warmup_track.npz',\
+                         g_loss=G_losses,val_loss=val_losses,val_loss_cmp=val_losses_cmp,\
+                         nrmse_train=nrmse_train,l1_train=l1_train,\
+                         nrmse_val=nrmse_val,l1_val=l1_val,\
+                         nrmse_val_cmp=nrmse_val_cmp,l1_val_cmp=l1_val_cmp)
+                print(f'\t Checkpoint saved at epoch {epoch + 1}, iteration {global_step}!')
+                
         except KeyboardInterrupt: # need debug
             print('Keyboard Interrupted! Exit~')
             if save_cp:
                 dir_checkpoint = '/home/huangz78/checkpoints/'
-                torch.save({'model_state_dict': netG.state_dict()}, dir_checkpoint + 'netG_warmup.pt')
+                torch.save({'model_state_dict': netG.state_dict()}, dir_checkpoint + 'netG_warmup_masspenned.pt')
                 np.savez('/home/huangz78/checkpoints/gnet_warmup_track.npz',\
                                  g_loss=G_losses,val_loss=val_losses,\
                                  nrmse_train=nrmse_train,l1_train=l1_train,\

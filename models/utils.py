@@ -8,6 +8,8 @@ import torch.optim as optim
 import xarray as xr
 import random
 
+datapath = '/mnt/shared_b/data/hydro_simulations/data/'
+
 def Nrmse(x,xstar):
     return torch.norm(x-xstar,'fro')/torch.norm(xstar,'fro')
 
@@ -25,8 +27,14 @@ def noise_generate(frame, fl=0.006, fr=0.0179, f=0.01, c=0.1, cl=0.06,cr=0.21, s
         c     = np.random.uniform(cl,cr,1)
         noise = np.ones(frame.shape) * c * scaling
     elif mode == 'gaussian':
-        noise_mag = sigma*np.max(np.abs(frame.flatten()))
-        noise = noise_mag*np.random.randn(frame.shape[0],frame.shape[1])
+        if len(frame.shape) == 2:
+            noise_mag = sigma*np.max(np.abs(frame.flatten()))
+            noise = noise_mag*np.random.randn(frame.shape[0],frame.shape[1])
+        elif len(frame.shape) == 3:
+            noise = np.zeros_like(frame)
+            for frame_ind in range(frame.shape[0]):
+                noise_mag = sigma*np.max(np.abs(frame[frame_ind,:,:].flatten()))
+                noise[frame_ind,:,:] = noise_mag*np.random.randn(frame.shape[1],frame.shape[2])
     return noise
 
 def complete(a):
@@ -38,11 +46,55 @@ def complete(a):
     a_full=resize(np.concatenate((al,ar), axis=1), (heg, wid), anti_aliasing=True)
     return a_full
 
-def illustrate(imgs,full=False,vmin=0,vmax=1.1):
+def compute_mass(imgs,Rrho=1,Rz=1):
+    '''
+    computing through cylindrical coordinate
+    input  --- imgs: [#batch, #channel, #dep, #heg, #wid]
+    output --- mass: [#batch, #dep]
+    '''
+    drho = Rrho / imgs.shape[3]
+    dz   = Rz   / imgs.shape[4]
+    metrics = torch.linspace(0,Rrho,imgs.shape[4]).repeat(imgs.shape[3],1)
+    integrand = imgs * metrics
+    mass = 2*np.pi * torch.sum(integrand,dim=(3,4)) * drho * dz 
+    return torch.squeeze(mass)
+
+def load_data_batch(fileind,trainfiles,b_size=5,dep=8,img_size=320,resize_option=False,noise_mode='const_rand',normalize_factor=50):
+    traintotal = len(trainfiles)   
+    current_b_size = min(b_size,traintotal-fileind)
+    if not resize_option:
+        dyn = np.zeros((current_b_size,1,dep,img_size,img_size))
+    else:
+        dyn = np.zeros((current_b_size,1,dep,256,256))
+    noise = np.zeros(dyn.shape)
+    bfile = 0
+    while (bfile < current_b_size) and (fileind+bfile < traintotal):
+    # Format batch: prepare training data for D network
+        filename = trainfiles[fileind+bfile]
+        sim = xr.open_dataarray(datapath+filename)
+        for t in range(dep):
+            if not resize_option:
+                dyn[bfile,0,t,:,:] = sim.isel(t=t)[:img_size,:img_size].values
+            else:
+                dyn[bfile,0,t,:,:] = resize(sim.isel(t=t)[:img_size,:img_size].values,(256,256),anti_aliasing=True)
+        maxval_tmp = np.max( np.abs(dyn[bfile,0,:,:,:]).flatten() ) # normalize each File
+        if maxval_tmp > normalize_factor:
+            bfile -= 1
+            fileind += 1
+        else:                        
+            dyn[bfile,0,:,:,:] = dyn[bfile,0,:,:,:] / normalize_factor
+            noise[bfile,0,:,:,:] = noise_generate(dyn[bfile,0,:,:,:],mode=noise_mode,scaling=dyn[bfile,0,:,:,:].max())
+#                         for t in range(dep): # different noise for each frame when using a 'for' loop
+#                             noise[bfile,0,t,:,:] = noise_generate(dyn[bfile,0,t,:,:],mode='linear')
+        sim.close()
+        bfile += 1
+    return dyn, noise, current_b_size
+
+def illustrate(imgs,full=False,vmin=0,vmax=1.1,title=None,fontsize=12,figsize=(18,9),cbar_shrink=.9):
     samp = imgs.clone().detach()
 #     vmax = torch.max(torch.flatten(samp))
 #     vmin = torch.min(torch.flatten(samp))
-    fig, axs = plt.subplots(nrows=2, ncols=4, sharex=False, figsize=(18, 18))
+    fig, axs = plt.subplots(nrows=2, ncols=4, sharex=False, figsize=figsize)
     if vmin==-np.inf or vmax==np.inf:
         if full:
             vmax = torch.max(complete(samp[0,0,:,:,:]))
@@ -53,18 +105,22 @@ def illustrate(imgs,full=False,vmin=0,vmax=1.1):
     for t in range(8):
         axs[t//4][t%4].set_title('t = ' + str(t))
         if full:
-            hd = axs[t//4][t%4].imshow(complete(samp[0,0,t,:,:]),vmin=vmin, vmax=vmax)
+            hd = axs[t//4][t%4].imshow(complete(samp[0,0,t,:,:]),vmin=vmin, vmax=vmax,origin='lower')
         else:
-            hd = axs[t//4][t%4].imshow(samp[0,0,t,:,:],vmin=vmin, vmax=vmax)
+            hd = axs[t//4][t%4].imshow(samp[0,0,t,:,:],vmin=vmin, vmax=vmax,origin='lower')
 #         divider = make_axes_locatable(axs[t//4][t%4])
 #         cax = divider.append_axes("right", size="5%", pad=0.05)
 #         fig.colorbar(hd,cax=cax)
-    cbar = fig.colorbar(hd, ax=axs.ravel().tolist(), shrink=0.95)
+    cbar = fig.colorbar(hd, ax=axs.ravel().tolist(), shrink=cbar_shrink)
     cbar.set_ticks(np.arange(vmin, vmax, (vmax-vmin)/10))
-    fig.suptitle('Generated dynamics, ' + str(t) + ' consecutive frames')
-    plt.rcParams.update({'font.size': 10})
+    if title is None:
+        fig.suptitle('Generated dynamics, ' + str(t) + ' consecutive frames')
+    else:
+        fig.suptitle(title)
+    plt.rcParams.update({'font.size': fontsize})
 #     plt.tight_layout()
     plt.show()
+    print('\n')
 
 def rolling_mean(x,window):
     window = int(window)

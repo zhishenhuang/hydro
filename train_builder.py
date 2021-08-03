@@ -77,7 +77,6 @@ if __name__ == '__main__':
     dep = 8
     traintotal  = args.traintotal
     testtotal   = args.testtotal
-    fileexp_ind = traintotal + testtotal + 5
     
     ngpu = 0
     device = torch.device("cuda:0" if (torch.cuda.is_available() and ngpu > 0) else "cpu")
@@ -112,7 +111,6 @@ if __name__ == '__main__':
               weight_fid=args.weight_fid,\
               print_every=10,validate_every=args.validate_every,\
               make_plot=False,\
-              fileexp_ind=fileexp_ind,\
               sigmoid_on=args.sigmoid_on,\
               ngpu=ngpu,\
               manual_seed=args.manualSeed,\
