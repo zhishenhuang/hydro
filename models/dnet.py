@@ -77,14 +77,6 @@ class Discriminator(nn.Module):
             nn.LeakyReLU(0.2, inplace=True),                   
             ## state size. (self.ndf*32) x 4 x 4
 #             nn.Conv3d(self.ndf * 32, 1, (4,4,4), (2,1,1), (1,0,0), bias=False),
-
-            ### optional for Residual3dUnet
-#             nn.Conv3d(self.ndf * 32, self.ndf * 64, (4,4,4), (2,2,2), (1,1,1), bias=False),
-#             nn.BatchNorm3d(self.ndf * 64),
-#             nn.LeakyReLU(0.2, inplace=True),
-#             # state size. (self.ndf*32) x 4 x 4
-#             nn.Conv3d(self.ndf * 64, 1       , (4,4,4), (2,2,2), (1,1,1), bias=False),
-#             nn.Sigmoid()
         )
         self.dense = nn.Sequential(            
             nn.Linear(self.veclen, lwid1),

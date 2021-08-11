@@ -21,7 +21,7 @@ def get_args():
     
     parser.add_argument('-e', '--epochs', metavar='E', type=int, default=20,
                         help='Number of epochs', dest='epochs')
-    parser.add_argument('-b', '--batch-size', metavar='B', type=int, nargs='?', default=3,
+    parser.add_argument('-b', '--batch-size', metavar='B', type=int, nargs='?', default=4,
                         help='Batch size', dest='b_size')
     parser.add_argument('-lrd', '--learning-rate-d', metavar='LRD', type=float, nargs='?', default=1e-4,
                         help='Learning rate for discriminator', dest='lrd')
@@ -29,19 +29,23 @@ def get_args():
                         help='Learning rate for generator', dest='lrg')
     parser.add_argument('-s','--random-seed',metavar='RS',type=float,nargs='?',default=999,
                         help='Random seed', dest='manualSeed')
-    parser.add_argument('-trd','--traintotal',type=int,default=240,
+    parser.add_argument('-trd','--traintotal',type=int,default=300,
                         help='total amount of files for training', dest='traintotal')
-    parser.add_argument('-ted','--testtotal',type=int,default=30,
+    parser.add_argument('-ted','--testtotal',type=int,default=40,
                         help='total amount of files for testing', dest='testtotal')
-    parser.add_argument('-vf','--validate-frequency',type=int,default=30,
+    parser.add_argument('-vf','--validate-frequency',type=int,default=38,
                         help='print every # iteration',dest='validate_every')
-    parser.add_argument('-wfid','--weight-fid',type=float,default=10,
-                        help='weight for data fidelity loss in the error of G net',dest='weight_fid')
-    parser.add_argument('-g','--gnet-path',type=str,default='/home/huangz78/checkpoints/netG_warmup.pth',
+    parser.add_argument('-wsup','--weight-super',type=float,default=0.99,
+                        help='weight for data fidelity loss/supervised loss term in the error of G net',dest='weight_super')
+    parser.add_argument('-wmasscon','--weight-masscon',type=float,default=10,
+                        help='weight for mass conservation term in the error of G net',dest='weight_masscon')
+#     parser.add_argument('-g','--gnet-path',type=str,default='/home/huangz78/checkpoints/netG_warmup.pth',
+#                         help='path to load checkpoints of generator network', dest='gpath')
+    parser.add_argument('-g','--gnet-path',type=str,default=None,
                         help='path to load checkpoints of generator network', dest='gpath')
     parser.add_argument('-d','--dnet-path',type=str,default=None,
                         help='path to laod checkpoints of discriminator network',dest='dpath')
-    parser.add_argument('-dup','--update-d-every',type=int,default=10,
+    parser.add_argument('-dup','--update-d-every',type=int,default=1,
                         help='update d every # steps',dest='dup')
     parser.add_argument('-gup','--update-g-every',type=int,default=1,
                         help='update g every # steps',dest='gup')
@@ -77,7 +81,7 @@ if __name__ == '__main__':
     ############################
     ### initialization of two networks
     ############################
-    dnet = Discriminator(ngpu,ndf=8,sigmoid_on=True,imgsize=(dep,img_size,img_size)).to(device)
+    dnet = Discriminator(ngpu,ndf=2,sigmoid_on=True,imgsize=(dep,img_size,img_size)).to(device)
     if args.dpath is None:
         # Apply the weights_init function to randomly initialize all weights
         #  to mean=0, stdev=0.2.
@@ -86,6 +90,7 @@ if __name__ == '__main__':
         checkpoint = torch.load(args.dpath)
         dnet.load_state_dict(checkpoint['model_state_dict'])
         print(f'D net loaded from {args.dpath} successfully!\n')    
+        
     gnet = ResidualUNet3D(1,1,num_levels=4,is_segmentation=False,final_sigmoid=False)
     if args.gpath is not None:
         checkpoint = torch.load(args.gpath)
@@ -99,7 +104,7 @@ if __name__ == '__main__':
               update_D_every=args.dup,update_G_every=args.gup,\
               img_size=img_size,\
               num_epochs=args.epochs,b_size=args.b_size,\
-              weight_fid=args.weight_fid,\
+              weight_masscon=args.weight_masscon,weight_super=args.weight_super,\
               print_every=10,validate_every=args.validate_every,\
               make_plot=False,\
               ngpu=ngpu,\
