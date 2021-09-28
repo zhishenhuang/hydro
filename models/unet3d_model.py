@@ -73,7 +73,13 @@ class Abstract3DUNet(nn.Module):
         else:
             # regression problem
             self.final_activation = None
-
+            
+    
+    @property
+    def n_params(self):
+        params_num = sum(p.numel() for p in self.parameters() if p.requires_grad) 
+        return params_num
+    
     def forward(self, x):
         x0 = x.clone()
         # encoder part
