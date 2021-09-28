@@ -10,12 +10,10 @@ import xarray as xr
 import os
 
 import sys
-sys.path.insert(0,'/home/leo/hydro/unet3d/')
+sys.path.insert(0,'/home/huangz78/hydro/unet3d/')
 from models.unet3d_model import UNet3D, ResidualUNet3D
 from models.dnet import weights_init,Discriminator
-from wgan_train import wgan_train
-
-import matplotlib.pyplot as plt
+from train import gan_train
 
 def get_args():
     parser = argparse.ArgumentParser(description='Train GAN on hydro simulation data',
@@ -25,48 +23,31 @@ def get_args():
                         help='Number of epochs', dest='epochs')
     parser.add_argument('-b', '--batch-size', metavar='B', type=int, nargs='?', default=2,
                         help='Batch size', dest='b_size')
-    parser.add_argument('-bt', '--batch-size-test', metavar='BT', type=int, nargs='?', default=2,
-                        help='Batch size validation', dest='b_size_test')
-    parser.add_argument('-lrd', '--learning-rate-d', metavar='LRD', type=float, nargs='?', default=1e-6,
+    parser.add_argument('-lrd', '--learning-rate-d', metavar='LRD', type=float, nargs='?', default=1e-4,
                         help='Learning rate for discriminator', dest='lrd')
-    parser.add_argument('-lrg', '--learning-rate-g', metavar='LRG', type=float, nargs='?', default=2e-6,
+    parser.add_argument('-lrg', '--learning-rate-g', metavar='LRG', type=float, nargs='?', default=1e-4,
                         help='Learning rate for generator', dest='lrg')
-    
     parser.add_argument('-s','--random-seed',metavar='RS',type=float,nargs='?',default=999,
                         help='Random seed', dest='manualSeed')
-    
-    parser.add_argument('-trd','--traintotal',type=int,default=1000,
+    parser.add_argument('-trd','--traintotal',type=int,default=100,
                         help='total amount of files for training', dest='traintotal')
-    parser.add_argument('-ted','--testtotal',type=int,default=100,
+    parser.add_argument('-ted','--testtotal',type=int,default=10,
                         help='total amount of files for testing', dest='testtotal')
-    
-#     parser.add_argument('-vf','--validate-frequency',type=int,default=38,
-#                         help='print every # iteration',dest='validate_every')
-    
-    parser.add_argument('-wsup','--weight-super',type=float,default=0.999,
-                        help='initial weight for data fidelity loss/supervised loss term in the error of G net',dest='weight_super')
-    parser.add_argument('-wmasscon','--weight-masscon',type=float,default=10,
-                        help='weight for mass conservation term in the error of G net',dest='weight_masscon')
-    
-    parser.add_argument('-g','--gnet-path',type=str,default=None,
+    parser.add_argument('-vf','--validate-frequency',type=int,default=50,
+                        help='print every # iteration',dest='validate_every')
+    parser.add_argument('-wfid','--weight-fid',type=float,default=10,
+                        help='weight for data fidelity loss in the error of G net',dest='weight_fid')
+    parser.add_argument('-g','--gnet-path',type=str,default='/home/huangz78/checkpoints/netG_warmup.pth',
                         help='path to load checkpoints of generator network', dest='gpath')
     parser.add_argument('-d','--dnet-path',type=str,default=None,
                         help='path to laod checkpoints of discriminator network',dest='dpath')
-    
-    parser.add_argument('-dchans','--dnet-channels',type=int,default=2,
-                        help='number of channels of first conv layer in D net',dest='d_chans')
-    parser.add_argument('-glevels','--gnet-levels',type=int,default=4,
-                        help='number of levels in G net',dest='g_levels')
-    
     parser.add_argument('-dup','--update-d-every',type=int,default=10,
                         help='update d every # steps',dest='dup')
     parser.add_argument('-gup','--update-g-every',type=int,default=1,
                         help='update g every # steps',dest='gup')
+    parser.add_argument('-sigmoid','--sigmoid-on',type=str,default='True',
+                        help='sigmoid on',dest='sigmoid_on')
     
-    parser.add_argument('-nm', '--noise-mode', type=str, default="real",
-                        help='noise mode', dest='noise_mode')
-    parser.add_argument('-ngpu', '--num-gpu', type=int, default=1,
-                        help='number of GPUs', dest='ngpu')
     return parser.parse_args()
 
 
@@ -80,7 +61,12 @@ if __name__ == '__main__':
     random.seed(args.manualSeed)
     torch.manual_seed(args.manualSeed)
     
-    datapath = '/mnt/DataB/hydro_simulations/data/'
+    if args.sigmoid_on == 'True':
+        args.sigmoid_on = True
+    elif args.sigmoid_on == 'False':
+        args.sigmoid_on = False
+    
+    datapath = '/mnt/shared_b/data/hydro_simulations/data/'
     ncfiles = list([])
     for file in os.listdir(datapath):
         if file.endswith(".nc"):
@@ -92,44 +78,40 @@ if __name__ == '__main__':
     traintotal  = args.traintotal
     testtotal   = args.testtotal
     
-    device = torch.device("cuda:0" if (torch.cuda.is_available() and args.ngpu > 0) else "cpu")
+    ngpu = 0
+    device = torch.device("cuda:0" if (torch.cuda.is_available() and ngpu > 0) else "cpu")
     
     ############################
     ### initialization of two networks
     ############################
-    dnet = Discriminator(ndf=args.d_chans,sigmoid_on=True,imgsize=(dep,img_size,img_size)).to(device)
+#     dnet = Discriminator(ngpu,sigmoid_on=False).to(device)    
+    dnet = Discriminator(ngpu,ndf=8,sigmoid_on=False,imgsize=(dep,img_size,img_size)).to(device)
     if args.dpath is None:
         # Apply the weights_init function to randomly initialize all weights
         #  to mean=0, stdev=0.2.
         dnet.apply(weights_init)
-        print('D net is randomly initialized!')
     else:
         checkpoint = torch.load(args.dpath)
         dnet.load_state_dict(checkpoint['model_state_dict'])
         print(f'D net loaded from {args.dpath} successfully!\n')    
-        
-    gnet = ResidualUNet3D(1,1,num_levels=args.g_levels,is_segmentation=False,final_sigmoid=False).to(device)
+#     gnet = UNet3D(1,1,is_segmentation=False,final_sigmoid=False)
+    gnet = ResidualUNet3D(1,1,num_levels=4,is_segmentation=False,final_sigmoid=False)
     if args.gpath is not None:
         checkpoint = torch.load(args.gpath)
         gnet.load_state_dict(checkpoint['model_state_dict'],strict=True)
         print(f'G net loaded from {args.gpath} successfully!\n')
-    else:
-        print('G net is randomly initialized!')
     
     ############################
     ### training process
     ############################
-    wgan_train(gnet,dnet,\
-               lrd=args.lrd,lrg=args.lrg,\
-               traintotal=traintotal,testtotal=testtotal,dep=dep,\
-               num_epochs=args.epochs,b_size=args.b_size,b_size_test=args.b_size_test,\
-               noise_mode=args.noise_mode,\
-               update_D_every=args.dup,update_G_every=args.gup,\
-               img_size=img_size,\
-               weight_masscon=args.weight_masscon,weight_super=args.weight_super,\
-               print_every=10,\
-               make_plot=False,\
-               ngpu=args.ngpu,\
-               manual_seed=args.manualSeed,\
-               resize_option=resize_option,\
-               save_cp=True)
+    gan_train(gnet,dnet,lrd=args.lrd,lrg=args.lrg,traintotal=traintotal,testtotal=testtotal,dep=dep,\
+              update_D_every=args.dup,update_G_every=args.gup,\
+              img_size=img_size,\
+              num_epochs=args.epochs,b_size=args.b_size,\
+              weight_fid=args.weight_fid,\
+              print_every=10,validate_every=args.validate_every,\
+              make_plot=False,\
+              sigmoid_on=args.sigmoid_on,\
+              ngpu=ngpu,\
+              manual_seed=args.manualSeed,\
+              save_cp=True,resize_option=resize_option)
