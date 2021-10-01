@@ -9,7 +9,7 @@ import xarray as xr
 import os,sys
 import matplotlib.pyplot as plt
 from models.utils import *
-
+from utils import *
 
 def validate(testfiles,netG,dep=8,batchsize=2,seed=0,img_size=320, \
              device="cpu",testfile_num=100,\

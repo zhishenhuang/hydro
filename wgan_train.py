@@ -75,7 +75,7 @@ def validate(testfiles,netD,netG,dep=8,batchsize=2,seed=0,img_size=320, \
             batch_step += 1
             
             real_cpu = dyn.to(device)
-            noise = noise.to(device)
+            noise    = noise.to(device)
             fake = netG(noise + real_cpu).clamp(min=0).detach()
             fake[real_cpu==0] = 0
 
@@ -94,7 +94,7 @@ def validate(testfiles,netD,netG,dep=8,batchsize=2,seed=0,img_size=320, \
 def wgan_train(netG,netD,\
               lrd=1e-5,lrg=2e-5,b_size=5,b_size_test=5,beta1=0.9,\
               traintotal=500,testtotal=10,num_epochs=5,\
-              weight_super=.99,weight_masscon=5,delta=0.2,\
+              weight_super=.99,weight_masscon=5,delta=0.2,weight_gradpen=5,\
               dep=8,\
               update_D_every=10,update_G_every=1,\
               print_every=10,\
@@ -111,6 +111,8 @@ def wgan_train(netG,netD,\
     b_size           : batch size for training
     weight_super     : weight on the supervised error
     weight_masscon   : weight on the error in mass conservation
+    delta            : weight on the relative L2 loss of data fidelity in the W-GAN G loss
+    weight_gradpen   : weight of gradient penalty in the W-GAN D loss
     traintotal       : total amount of files for training
     testtotal        : total amount of files for testing
     num_epochs       : number of epochs to run
@@ -202,7 +204,8 @@ def wgan_train(netG,netD,\
                     # Forward pass real batch through D
                     D_real_1 = netD(real_cpu).view(-1)
                     D_fake_1 = netD(fake.detach()).view(-1)
-                    gradient_penalty = _gradient_penalty(netD,real_cpu,fake,use_cuda=use_cuda)
+                    gradient_penalty = _gradient_penalty(netD,real_cpu,fake,use_cuda=use_cuda,\
+                                                         gp_weight=weight_gradpen)
                     
                     d_loss = D_fake_1.mean() - D_real_1.mean() + gradient_penalty
                     d_loss.backward()
@@ -222,14 +225,15 @@ def wgan_train(netG,netD,\
                     
                     D_real_2 = netD(real_cpu).view(-1)
                     D_fake_2 = netD(fake).view(-1)
-                    gradient_penalty = _gradient_penalty(netD,real_cpu,fake,use_cuda=use_cuda)
+                    gradient_penalty = _gradient_penalty(netD,real_cpu,fake,use_cuda=use_cuda,\
+                                                         gp_weight=weight_gradpen)
                    
                     d_loss = D_fake_2.mean() - D_real_2.mean() + gradient_penalty
-                    
+
                     mass_fake = compute_mass(fake,device=device)
                     mass_fake.retain_grad()
                     mass_real = compute_mass(real_cpu,device=device)
-                    g_loss = -(1-weight_super)*d_loss.mean() + weight_super*L1(fake,real_cpu) + delta*weight_super*L2(fake,real_cpu) + weight_masscon*L2_loss(mass_fake,mass_real)
+                    g_loss = -(1-weight_super)*d_loss + weight_super*L1(fake,real_cpu) + delta*weight_super*L2(fake,real_cpu) + weight_masscon*L2_loss(mass_fake,mass_real)
                     
                     # Calculate gradients for G
                     optimizerG.zero_grad()

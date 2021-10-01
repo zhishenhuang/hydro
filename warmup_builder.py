@@ -29,9 +29,9 @@ def get_args():
                         help='Random seed', dest='manualSeed')
     parser.add_argument('-wfid','--weight-fid',type=float,default=1,
                         help='weight for data fidelity loss in the error of G net',dest='weight_fid')
-    parser.add_argument('-trd','--traintotal',type=int,default=100,
+    parser.add_argument('-trd','--traintotal',type=int,default=1000,
                         help='total amount of files for training', dest='traintotal')
-    parser.add_argument('-ted','--testtotal',type=int,default=10,
+    parser.add_argument('-ted','--testtotal',type=int,default=100,
                         help='total amount of files for testing', dest='testtotal')
     parser.add_argument('-vf','--validate-frequency',type=int,default=50,
                         help='print every # iteration',dest='validate_every')

@@ -23,7 +23,7 @@ datapath = '/mnt/DataB/hydro_simulations/data/'
 noisepath = '/mnt/DataB/hydro_simulations/noise_source.npz'
 noisedata = np.load(noisepath)['data']
 
-def lpnorm(x,xstar,p='fro'):
+def lpnorm(x,xstar,p='fro',mode='sum'):
     '''
     x and xstar are both assumed to be in the format NCDHW
     '''
@@ -31,19 +31,24 @@ def lpnorm(x,xstar,p='fro'):
     numerator   = torch.norm(x-xstar,p=p,dim=(3,4))
     denominator = torch.norm(xstar  ,p=p,dim=(3,4))
     error = torch.sum( torch.div(numerator,denominator) )
+    if mode == 'sum':
+        error = torch.sum(  torch.div(numerator,denominator) )
+    elif mode == 'mean':
+        error = torch.mean( torch.div(numerator,denominator) )
+    
     return error
 
-def L2(x,xstar):
-    return lpnorm(x,xstar,p='fro')
+def L2(x,xstar,mode='sum'):
+    return lpnorm(x,xstar,p='fro',mode=mode)
 #     return torch.norm(x-xstar,'fro')/torch.norm(xstar,'fro')
 
-def L1(x,xstar):
-    return lpnorm(x,xstar,p=1)
+def L1(x,xstar,mode='sum'):
+    return lpnorm(x,xstar,p=1,mode=mode)
 #     return torch.norm(x-xstar,p=1)/torch.norm(xstar,p=1)
 
 def noise_generate(frame, \
                    fl=0.006, fr=0.0179, f=0.01, c=0.1, cl=0.06,cr=0.21, sigma=1e-1, \
-                   scaling=1,\
+                   scaling=1,clampval=12,\
                    mode='linear',noisedata=noisedata):
     if mode == 'linear':
         factor = np.random.uniform(fl,fr,1) * scaling
@@ -64,6 +69,7 @@ def noise_generate(frame, \
                 noise_mag            = sigma*frame[frame_ind,:,:].abs().max()
                 noise[frame_ind,:,:] = noise_mag*torch.randn(frame.shape[1],frame.shape[2])
     elif mode == 'real':
+        assert(clampval>0)
         maxheg = noisedata.shape[1]
         maxwid = noisedata.shape[2]
         if len(frame.shape) == 3:
@@ -71,14 +77,14 @@ def noise_generate(frame, \
             heg,wid = frame.shape[1],frame.shape[2]
             for frame_ind in range(frame.shape[0]):
                 noiseind  = np.random.randint(low=20, size=1, dtype=int)   
-                noise_tmp = torch.tensor(noisedata[noiseind, maxheg-heg:, maxwid-wid:])
+                noise_tmp = torch.tensor(noisedata[noiseind, maxheg-heg:, maxwid-wid:]).clamp(min=-clampval,max=clampval)
                 scaling_rand = np.random.rand()
                 noise[frame_ind,:,:] = \
                     noise_tmp/noise_tmp.abs().max() * frame[frame_ind,:,:].abs().max() * scaling_rand
         elif len(frame.shape) == 2:
             heg,wid = frame.shape[0],frame.shape[1]
             noiseind     = np.random.randint(low=20, size=1, dtype=int)
-            noise_tmp    = torch.tensor(noisedata[noiseind, maxheg-heg:, maxwid-wid:])
+            noise_tmp    = torch.tensor(noisedata[noiseind, maxheg-heg:, maxwid-wid:]).clamp(min=-clampval,max=clampval)
             scaling_rand = np.random.rand()
             noise        = noise_tmp/noise_tmp.abs().max() * frame.abs().max() * scaling_rand
     return noise

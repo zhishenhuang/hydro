@@ -27,7 +27,7 @@ def get_args():
                         help='Batch size', dest='b_size')
     parser.add_argument('-bt', '--batch-size-test', metavar='BT', type=int, nargs='?', default=2,
                         help='Batch size validation', dest='b_size_test')
-    parser.add_argument('-lrd', '--learning-rate-d', metavar='LRD', type=float, nargs='?', default=1e-6,
+    parser.add_argument('-lrd', '--learning-rate-d', metavar='LRD', type=float, nargs='?', default=2e-6,
                         help='Learning rate for discriminator', dest='lrd')
     parser.add_argument('-lrg', '--learning-rate-g', metavar='LRG', type=float, nargs='?', default=2e-6,
                         help='Learning rate for generator', dest='lrg')
@@ -47,6 +47,8 @@ def get_args():
                         help='initial weight for data fidelity loss/supervised loss term in the error of G net',dest='weight_super')
     parser.add_argument('-wmasscon','--weight-masscon',type=float,default=10,
                         help='weight for mass conservation term in the error of G net',dest='weight_masscon')
+    parser.add_argument('-wgrad','--weight-grad-pen',type=float,default=10,
+                        help='weight of gradient penalty in D loss',dest='weight_gradpen')
     
     parser.add_argument('-g','--gnet-path',type=str,default=None,
                         help='path to load checkpoints of generator network', dest='gpath')
@@ -58,7 +60,7 @@ def get_args():
     parser.add_argument('-glevels','--gnet-levels',type=int,default=4,
                         help='number of levels in G net',dest='g_levels')
     
-    parser.add_argument('-dup','--update-d-every',type=int,default=10,
+    parser.add_argument('-dup','--update-d-every',type=int,default=1,
                         help='update d every # steps',dest='dup')
     parser.add_argument('-gup','--update-g-every',type=int,default=1,
                         help='update g every # steps',dest='gup')
@@ -127,9 +129,10 @@ if __name__ == '__main__':
                update_D_every=args.dup,update_G_every=args.gup,\
                img_size=img_size,\
                weight_masscon=args.weight_masscon,weight_super=args.weight_super,\
+               weight_gradpen=args.weight_gradpen,\
                print_every=10,\
                make_plot=False,\
                ngpu=args.ngpu,\
                manual_seed=args.manualSeed,\
                resize_option=resize_option,\
-               save_cp=True)
+               save_cp=False)
