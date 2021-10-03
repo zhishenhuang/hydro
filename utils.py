@@ -3,10 +3,10 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from skimage.transform import resize
 import torch
-
+from scipy.ndimage import gaussian_filter
 import xarray as xr
 import random
-
+import abel
 import importlib
 import logging
 import os
@@ -49,6 +49,7 @@ def L1(x,xstar,mode='sum'):
 def noise_generate(frame, \
                    fl=0.006, fr=0.0179, f=0.01, c=0.1, cl=0.06,cr=0.21, sigma=1e-1, \
                    scaling=1,clampval=12,\
+                   volatility=.04,\
                    mode='linear',noisedata=noisedata):
     if mode == 'linear':
         factor = np.random.uniform(fl,fr,1) * scaling
@@ -68,7 +69,7 @@ def noise_generate(frame, \
             for frame_ind in range(frame.shape[0]):
                 noise_mag            = sigma*frame[frame_ind,:,:].abs().max()
                 noise[frame_ind,:,:] = noise_mag*torch.randn(frame.shape[1],frame.shape[2])
-    elif mode == 'real':
+    elif mode == 'sampling':
         assert(clampval>0)
         maxheg = noisedata.shape[1]
         maxwid = noisedata.shape[2]
@@ -87,6 +88,23 @@ def noise_generate(frame, \
             noise_tmp    = torch.tensor(noisedata[noiseind, maxheg-heg:, maxwid-wid:]).clamp(min=-clampval,max=clampval)
             scaling_rand = np.random.rand()
             noise        = noise_tmp/noise_tmp.abs().max() * frame.abs().max() * scaling_rand
+    elif mode == 'Abel-linear':        
+        dyn_fullspan = torch_complete(frame)
+        noise = torch.zeros_like(frame)
+        method = 'hansenlaw'
+        assert(len(frame.shape)==3)
+        heg = frame.shape[1]
+        wid = frame.shape[2]
+        ind = 0
+        for img in dyn_fullspan:
+            img_abel = abel.Transform(img.numpy(), method=method, direction='forward').transform
+            img_abel_noisy = gaussian_filter(img_abel,sigma,order=0)
+            img_abel_noisy = (1 + np.random.uniform(low=-volatility,high=volatility) ) * img_abel_noisy + \
+                    np.random.uniform(low=-volatility,high=volatility) * np.mean(np.abs(img_abel_noisy.flatten()))
+            img_noisy = abel.Transform(img_abel_noisy, method=method, direction='backward').transform
+            noise_fullspan = img_noisy - img.numpy()
+            noise[ind,:,:] = torch.tensor(noise_fullspan[heg:,wid:])
+            ind += 1
     return noise
 
 def complete(a,sizefix=False):
@@ -114,9 +132,28 @@ def compute_mass(imgs,Rrho=1,Rz=1,device=torch.device('cpu')):
     mass = 2*np.pi * torch.sum(integrand,dim=(3,4)) * drho * dz 
     return torch.squeeze(mass)
 
+def torch_complete(imgs):
+
+    if len(imgs.shape)==5:   # assume the input img has the format NCDHW
+        ar = torch.cat((torch.flip(imgs,dims=[3]),imgs), dim=3) # Flipping array to get the right part
+        leftupquad = torch.flip(imgs,dims=[4])
+        al = torch.cat((torch.flip(leftupquad,dims=[3]),leftupquad), dim=3) # Flipping array to get the left part
+        # Combining to form a full circle from a quarter image
+        a_full = torch.cat((al,ar), dim=(4))
+    elif len(imgs.shape)==3: # assume the input img has the format DHW
+        ar = torch.cat((torch.flip(imgs,dims=[1]),imgs), dim=1) # Flipping array to get the right part
+        leftupquad = torch.flip(imgs,dims=[2])
+        al = torch.cat((torch.flip(leftupquad,dims=[1]),leftupquad), dim=1) # Flipping array to get the left part
+        # Combining to form a full circle from a quarter image
+        a_full = torch.cat((al,ar), dim=(2))
+    else:
+        raise('Input dimension for the torch_complete function is incorrect.')
+    return a_full
+
 def load_data_batch(fileind,trainfiles,b_size=5,dep=8,img_size=320,\
                     resize_option=False,newsize=256,\
-                    noise_mode='const_rand',normalize_factor=50):
+                    noise_mode='const_rand',normalize_factor=50,\
+                    sigma=1,volatility=.04):
     traintotal = len(trainfiles)
     assert(dep<41)
     time_pts = torch.round(torch.linspace(0,40,dep)).int() 
@@ -144,7 +181,9 @@ def load_data_batch(fileind,trainfiles,b_size=5,dep=8,img_size=320,\
 #             fileind += 1
 #         else:                        
         dyn[bfile,0,:,:,:]   = dyn[bfile,0,:,:,:] / normalize_factor
-        noise[bfile,0,:,:,:] = noise_generate(dyn[bfile,0,:,:,:],mode=noise_mode,scaling=dyn[bfile,0,:,:,:].max())
+        noise[bfile,0,:,:,:] = noise_generate(dyn[bfile,0,:,:,:],mode=noise_mode,\
+                                              scaling=dyn[bfile,0,:,:,:].max(),\
+                                              sigma=sigma,volatility=volatility)
         sim.close()
         bfile += 1
     return dyn, noise

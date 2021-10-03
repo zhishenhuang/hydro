@@ -13,7 +13,8 @@ import sys
 sys.path.insert(0,'/home/leo/hydro/unet3d/')
 from models.unet3d_model import UNet3D, ResidualUNet3D
 from models.dnet import weights_init,Discriminator
-from wgan_train import wgan_train
+# from wgan_train import wgan_train
+from wgan_train import wgan_trainer
 
 import matplotlib.pyplot as plt
 
@@ -55,7 +56,7 @@ def get_args():
     parser.add_argument('-d','--dnet-path',type=str,default=None,
                         help='path to laod checkpoints of discriminator network',dest='dpath')
     
-    parser.add_argument('-dchans','--dnet-channels',type=int,default=2,
+    parser.add_argument('-dchans','--dnet-channels',type=int,default=4,
                         help='number of channels of first conv layer in D net',dest='d_chans')
     parser.add_argument('-glevels','--gnet-levels',type=int,default=4,
                         help='number of levels in G net',dest='g_levels')
@@ -65,7 +66,7 @@ def get_args():
     parser.add_argument('-gup','--update-g-every',type=int,default=1,
                         help='update g every # steps',dest='gup')
     
-    parser.add_argument('-nm', '--noise-mode', type=str, default="real",
+    parser.add_argument('-nm', '--noise-mode', type=str, default="Abel-linear",
                         help='noise mode', dest='noise_mode')
     parser.add_argument('-ngpu', '--num-gpu', type=int, default=1,
                         help='number of GPUs', dest='ngpu')
@@ -91,9 +92,7 @@ if __name__ == '__main__':
     img_size = 320
     resize_option = False
     dep = 8
-    traintotal  = args.traintotal
-    testtotal   = args.testtotal
-    
+    normalize_factor = 50
     device = torch.device("cuda:0" if (torch.cuda.is_available() and args.ngpu > 0) else "cpu")
     
     ############################
@@ -121,18 +120,18 @@ if __name__ == '__main__':
     ############################
     ### training process
     ############################
-    wgan_train(gnet,dnet,\
-               lrd=args.lrd,lrg=args.lrg,\
-               traintotal=traintotal,testtotal=testtotal,dep=dep,\
-               num_epochs=args.epochs,b_size=args.b_size,b_size_test=args.b_size_test,\
-               noise_mode=args.noise_mode,\
-               update_D_every=args.dup,update_G_every=args.gup,\
-               img_size=img_size,\
-               weight_masscon=args.weight_masscon,weight_super=args.weight_super,\
-               weight_gradpen=args.weight_gradpen,\
-               print_every=10,\
-               make_plot=False,\
-               ngpu=args.ngpu,\
-               manual_seed=args.manualSeed,\
-               resize_option=resize_option,\
-               save_cp=False)
+    dir_checkpoint = '/mnt/DataA/checkpoints/leo/hydro/'
+    wgan_Trainer = wgan_trainer(gnet,dnet,dep=dep,img_size=img_size,manual_seed=args.manualSeed,\
+                                resize_option=resize_option,noise_mode=args.noise_mode,\
+                                normalize_factor=normalize_factor,ngpu=args.ngpu,\
+                                datapath=datapath,dir_checkpoint=dir_checkpoint)
+    
+    wgan_Trainer.run(lrd=args.lrd,lrg=args.lrg,\
+                    traintotal=args.traintotal,testtotal=args.testtotal,\
+                    num_epochs=args.epochs,b_size=args.b_size,b_size_test=args.b_size_test,\
+                    update_D_every=args.dup,update_G_every=args.gup,\
+                    weight_masscon=args.weight_masscon,weight_super=args.weight_super,\
+                    weight_gradpen=args.weight_gradpen,\
+                    print_every=10,\
+                    make_plot=False,\
+                    save_cp=True)
