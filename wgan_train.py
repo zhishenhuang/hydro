@@ -92,7 +92,8 @@ class wgan_trainer:
                  ngpu:int=0,
                  datapath='/mnt/DataB/hydro_simulations/data/',
                  dir_checkpoint = '/mnt/DataA/checkpoints/leo/hydro/'):
-        self.netG = netG; self.netD = netD
+        self.netG = netG
+        self.netD = netD
         self.dep = dep        
         self.img_size = img_size
         self.manual_seed = manual_seed
@@ -134,7 +135,6 @@ class wgan_trainer:
                                             noise_mode=self.noise_mode,normalize_factor = self.normalize_factor,\
                                             volatility=self.volatility,sigma=self.sigma)
                 fileind += batchsize
-                batch_step += 1
 
                 real_cpu = dyn.to(device)
                 noise    = noise.to(device)
@@ -191,8 +191,12 @@ class wgan_trainer:
         print('Total amount of available files:', len(ncfiles))
         print('Train file amount: {}'.format(traintotal))
         print('Test file amount:  {}'.format(testtotal))
-        self.trainfiles = ncfiles[filestart:filestart+traintotal+800]
-        self.testfiles  = ncfiles[filestart+traintotal+800:] # traintotal+testtotal+800
+#         self.trainfiles = ncfiles[filestart:filestart+traintotal]
+#         self.testfiles  = ncfiles[filestart+traintotal:filestart+traintotal+testtotal]         
+        self.trainfiles = random.sample(set(ncfiles),k=traintotal)
+        ncfiles = set(ncfiles) - set(self.trainfiles)
+        self.testfiles  = random.sample(ncfiles,k=testtotal)
+        
         
         print('weight of mass conservation term in errG = ', weight_masscon)
         print('weight of supervised loss term in errG = ',   weight_super)
@@ -252,6 +256,7 @@ class wgan_trainer:
                                                              gp_weight=weight_gradpen)
 
                         d_loss = D_fake_1.mean() - D_real_1.mean() + gradient_penalty
+#                         print(f'D_fake_mean = {D_fake_1.mean().item()}, D_real_mean = {D_real_1.mean().item()}, grad pen. = {gradient_penalty}')
                         d_loss.backward()
 
                         optimizerD.step()           
@@ -309,7 +314,7 @@ class wgan_trainer:
                     ############################
                     # Output training stats, and visualization
                     ############################
-                    if (global_step%print_every==0) and (len(D_losses)>0) :
+                    if (global_step%print_every==0) and (len(self.D_losses)>0) :
                         print(f'[{global_step+1}][{epoch+1}/{num_epochs}][{fileind}/{traintotal}]\t Loss_D: {d_loss.item()}\t Loss_G: {g_loss.item()}\t D(x): {D_real_2.mean().item()}\t D(G(z)): D {D_fake_1.mean().item()}/0   G {D_fake_2.mean().item()}/1')
                         if save_cp:
                             self.save_model(epoch=epoch,global_step=global_step)
