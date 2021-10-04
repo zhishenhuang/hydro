@@ -85,9 +85,11 @@ class wgan_trainer:
                  img_size:int=320,
                  manual_seed:int=999,
                  resize_option:bool=False,
-                 noise_mode:str='Abel-linear',
-                 sigma:float=1,
-                 volatility:float=.04,
+                 noise_mode:str='Abel-gaussian',
+                 sigma:float=2,
+                 volatility:float=.05,
+                 xi:float=.02,
+                 scaling:float=1.,
                  normalize_factor:float=50.,
                  ngpu:int=0,
                  datapath='/mnt/DataB/hydro_simulations/data/',
@@ -110,8 +112,11 @@ class wgan_trainer:
         self.datapath = datapath
         self.dir_checkpoint = dir_checkpoint
         
+        ## params for noise generation
         self.volatility = volatility
         self.sigma = sigma
+        self.xi = xi
+        self.scaling = scaling
         
     def empty_cache(self):
         torch.cuda.empty_cache()
@@ -133,7 +138,7 @@ class wgan_trainer:
                 dyn, noise = load_data_batch(fileind,self.testfiles,b_size=batchsize,dep=self.dep,img_size=self.img_size,\
                                             resize_option=self.resize_option,\
                                             noise_mode=self.noise_mode,normalize_factor = self.normalize_factor,\
-                                            volatility=self.volatility,sigma=self.sigma)
+                                            volatility=self.volatility,sigma=self.sigma,xi=self.xi,scaling=self.scaling)
                 fileind += batchsize
 
                 real_cpu = dyn.to(device)
@@ -230,7 +235,7 @@ class wgan_trainer:
                                                  b_size=b_size, dep=self.dep, img_size=self.img_size,\
                                                  resize_option=self.resize_option,\
                                                  noise_mode=self.noise_mode, normalize_factor=self.normalize_factor,\
-                                                 volatility=self.volatility,sigma=self.sigma)
+                                                 volatility=self.volatility,sigma=self.sigma,xi=self.xi,scaling=self.scaling)
                     noise = noise.to(device)
                     real_cpu = dyn.to(device)
                     fileind += b_size
@@ -282,7 +287,7 @@ class wgan_trainer:
                         mass_fake = compute_mass(fake,device=device)
                         mass_fake.retain_grad()
                         mass_real = compute_mass(real_cpu,device=device)
-                        g_loss = -(1-weight_super)*d_loss + weight_super*L1(fake,real_cpu) + delta*weight_super*L2(fake,real_cpu) + weight_masscon*L2_loss(mass_fake,mass_real)
+                        g_loss = -(1-weight_super)*d_loss + weight_super*L2(fake,real_cpu) + delta*weight_super*L1(fake,real_cpu) + weight_masscon*L2_loss(mass_fake,mass_real)
 
                         # Calculate gradients for G
                         optimizerG.zero_grad()

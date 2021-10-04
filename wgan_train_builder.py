@@ -28,7 +28,7 @@ def get_args():
                         help='Batch size', dest='b_size')
     parser.add_argument('-bt', '--batch-size-test', metavar='BT', type=int, nargs='?', default=2,
                         help='Batch size validation', dest='b_size_test')
-    parser.add_argument('-lrd', '--learning-rate-d', metavar='LRD', type=float, nargs='?', default=2e-6,
+    parser.add_argument('-lrd', '--learning-rate-d', metavar='LRD', type=float, nargs='?', default=1e-6,
                         help='Learning rate for discriminator', dest='lrd')
     parser.add_argument('-lrg', '--learning-rate-g', metavar='LRG', type=float, nargs='?', default=2e-6,
                         help='Learning rate for generator', dest='lrg')
@@ -66,7 +66,7 @@ def get_args():
     parser.add_argument('-gup','--update-g-every',type=int,default=1,
                         help='update g every # steps',dest='gup')
     
-    parser.add_argument('-nm', '--noise-mode', type=str, default="Abel-linear",
+    parser.add_argument('-nm', '--noise-mode', type=str, default="Abel-gaussian",
                         help='noise mode', dest='noise_mode')
     parser.add_argument('-ngpu', '--num-gpu', type=int, default=1,
                         help='number of GPUs', dest='ngpu')
@@ -124,7 +124,8 @@ if __name__ == '__main__':
     wgan_Trainer = wgan_trainer(gnet,dnet,dep=dep,img_size=img_size,manual_seed=args.manualSeed,\
                                 resize_option=resize_option,noise_mode=args.noise_mode,\
                                 normalize_factor=normalize_factor,ngpu=args.ngpu,\
-                                datapath=datapath,dir_checkpoint=dir_checkpoint)
+                                datapath=datapath,dir_checkpoint=dir_checkpoint,\
+                                sigma=2,volatility=.05,xi=.02,scaling=1.)
     
     wgan_Trainer.run(lrd=args.lrd,lrg=args.lrg,\
                     traintotal=args.traintotal,testtotal=args.testtotal,\

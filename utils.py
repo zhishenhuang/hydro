@@ -46,10 +46,40 @@ def L1(x,xstar,mode='sum'):
     return lpnorm(x,xstar,p=1,mode=mode)
 #     return torch.norm(x-xstar,p=1)/torch.norm(xstar,p=1)
 
+def exp_negative( input , xi=1):
+    '''
+    assume the input is a image of the format HW
+    '''
+    return np.exp(-xi*input)
+
+def exp_negative_inverse( input , xi=1):
+    '''
+    assume the input is a image of the format HW
+    '''
+    tmp = -1/xi * np.log(input)
+    
+    tmp[np.isnan(tmp)] = 0
+    tmp[np.isinf(tmp)] = 0
+    
+    return tmp
+
+
+from contextlib import contextmanager
+@contextmanager
+def suppress_stdout():
+    with open(os.devnull, "w") as devnull:
+        old_stdout = sys.stdout
+        sys.stdout = devnull
+        try:  
+            yield
+        finally:
+            sys.stdout = old_stdout
+
 def noise_generate(frame, \
-                   fl=0.006, fr=0.0179, f=0.01, c=0.1, cl=0.06,cr=0.21, sigma=1e-1, \
-                   scaling=1,clampval=12,\
-                   volatility=.04,\
+                   fl=0.006, fr=0.0179, f=0.01, c=0.1, cl=0.06,cr=0.21, \
+                   sigma=1e-1,scaling=1,\
+                   volatility=.04, xi=1,\
+                   clampval=12,\
                    mode='linear',noisedata=noisedata):
     if mode == 'linear':
         factor = np.random.uniform(fl,fr,1) * scaling
@@ -91,18 +121,43 @@ def noise_generate(frame, \
     elif mode == 'Abel-linear':        
         dyn_fullspan = torch_complete(frame)
         noise = torch.zeros_like(frame)
-        method = 'hansenlaw'
+        method = 'basex'
         assert(len(frame.shape)==3)
         heg = frame.shape[1]
         wid = frame.shape[2]
         ind = 0
+        scaling_factor = np.random.rand()
         for img in dyn_fullspan:
-            img_abel = abel.Transform(img.numpy(), method=method, direction='forward').transform
-#             img_abel_noisy = gaussian_filter(img_abel,sigma,order=0)
+            img_abel = abel.Transform(img.numpy(), method=method, direction='forward',verbose=False).transform
+            scatter_abel = gaussian_filter(img_abel,sigma,order=0)
+            eps = np.random.uniform(low=-0.05,high=0.05)
+            img_abel_noisy = img_abel +  ( (1+eps)*  scaling_factor ) * scatter_abel
 #             img_abel_noisy = (1 + np.random.uniform(low=-volatility,high=volatility) ) * img_abel + \
 #                     np.random.uniform(low=-volatility,high=volatility) * np.mean(np.abs(img_abel.flatten()))
-            img_abel_noisy = (1 + .04 ) * img_abel + .04 * np.mean(np.abs(img_abel.flatten()))
-            img_noisy = abel.Transform(img_abel_noisy, method=method, direction='backward').transform
+#             img_abel_noisy = (1 + .04 ) * img_abel + .04 * np.mean(np.abs(img_abel.flatten()))
+            img_noisy = abel.Transform(img_abel_noisy, method=method, direction='backward',verbose=False).transform
+            noise_fullspan = img_noisy - img.numpy()
+            noise[ind,:,:] = torch.tensor(noise_fullspan[heg:,wid:])
+            ind += 1
+    elif mode == 'Abel-gaussian':        
+        dyn_fullspan = torch_complete(frame)
+        noise = torch.zeros_like(frame)
+        method = 'basex'
+        assert(len(frame.shape)==3)
+        heg = frame.shape[1]
+        wid = frame.shape[2]
+        ind = 0
+        scaling_factor = scaling # np.random.rand()
+        for img in dyn_fullspan:
+            with suppress_stdout():
+                img_abel = abel.Transform(img.numpy(), method=method, direction='forward',verbose=False).transform
+            D = exp_negative(img_abel,xi=xi)
+            S = gaussian_filter(D,sigma,order=0)
+            eps = np.random.uniform(low=-volatility,high=volatility)
+            T = D + ( (1+eps)*  scaling_factor ) * S
+            img_abel_noisy = exp_negative_inverse(T,xi=xi)
+            with suppress_stdout():
+                img_noisy = abel.Transform(img_abel_noisy, method=method, direction='backward',verbose=False).transform
             noise_fullspan = img_noisy - img.numpy()
             noise[ind,:,:] = torch.tensor(noise_fullspan[heg:,wid:])
             ind += 1
@@ -154,7 +209,7 @@ def torch_complete(imgs):
 def load_data_batch(fileind,trainfiles,b_size=5,dep=8,img_size=320,\
                     resize_option=False,newsize=256,\
                     noise_mode='const_rand',normalize_factor=50,\
-                    sigma=1,volatility=.04):
+                    sigma=1,volatility=.04,xi=.02,scaling=1.):
     traintotal = len(trainfiles)
     assert(dep<41)
     time_pts = torch.round(torch.linspace(0,40,dep)).int() 
@@ -183,8 +238,8 @@ def load_data_batch(fileind,trainfiles,b_size=5,dep=8,img_size=320,\
 #         else:                        
         dyn[bfile,0,:,:,:]   = dyn[bfile,0,:,:,:] / normalize_factor
         noise[bfile,0,:,:,:] = noise_generate(dyn[bfile,0,:,:,:],mode=noise_mode,\
-                                              scaling=dyn[bfile,0,:,:,:].max(),\
-                                              sigma=sigma,volatility=volatility)
+                                              scaling=scaling,\
+                                              sigma=sigma,volatility=volatility,xi=xi) # scaling = dyn[bfile,0,:,:,:].max()
         sim.close()
         bfile += 1
     return dyn, noise
