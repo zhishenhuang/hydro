@@ -210,7 +210,7 @@ class wgan_trainer:
         L1_loss    = nn.L1Loss()
         L2_loss    = nn.MSELoss()
         optimizerD = optim.Adam(self.netD.parameters(), lr=lrd, betas=(beta1, 0.999))
-        schedulerD = StepLR(optimizerD,step_size=20,gamma=np.sqrt(.5))
+        schedulerD = StepLR(optimizerD,step_size=20,gamma=np.sqrt(.1))
 #         schedulerD = ReduceLROnPlateau(optimizerD, 'min',factor=0.8,patience=20,min_lr=1e-7)
         optimizerG = optim.Adam(self.netG.parameters(), lr=lrg, betas=(beta1, 0.999))
         schedulerG = StepLR(optimizerG, step_size=40, gamma=0.9)

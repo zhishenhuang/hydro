@@ -98,9 +98,10 @@ def noise_generate(frame, \
         ind = 0
         for img in dyn_fullspan:
             img_abel = abel.Transform(img.numpy(), method=method, direction='forward').transform
-            img_abel_noisy = gaussian_filter(img_abel,sigma,order=0)
-            img_abel_noisy = (1 + np.random.uniform(low=-volatility,high=volatility) ) * img_abel_noisy + \
-                    np.random.uniform(low=-volatility,high=volatility) * np.mean(np.abs(img_abel_noisy.flatten()))
+#             img_abel_noisy = gaussian_filter(img_abel,sigma,order=0)
+#             img_abel_noisy = (1 + np.random.uniform(low=-volatility,high=volatility) ) * img_abel + \
+#                     np.random.uniform(low=-volatility,high=volatility) * np.mean(np.abs(img_abel.flatten()))
+            img_abel_noisy = (1 + .04 ) * img_abel + .04 * np.mean(np.abs(img_abel.flatten()))
             img_noisy = abel.Transform(img_abel_noisy, method=method, direction='backward').transform
             noise_fullspan = img_noisy - img.numpy()
             noise[ind,:,:] = torch.tensor(noise_fullspan[heg:,wid:])
