@@ -66,7 +66,7 @@ def get_args():
     parser.add_argument('-gup','--update-g-every',type=int,default=1,
                         help='update g every # steps',dest='gup')
     
-    parser.add_argument('-nm', '--noise-mode', type=str, default="Abel-gaussian",
+    parser.add_argument('-nm', '--noise-mode', type=str, default="Abel-gaussian-double",
                         help='noise mode', dest='noise_mode')
     parser.add_argument('-ngpu', '--num-gpu', type=int, default=1,
                         help='number of GPUs', dest='ngpu')
@@ -125,7 +125,7 @@ if __name__ == '__main__':
                                 resize_option=resize_option,noise_mode=args.noise_mode,\
                                 normalize_factor=normalize_factor,ngpu=args.ngpu,\
                                 datapath=datapath,dir_checkpoint=dir_checkpoint,\
-                                sigma=2,volatility=.05,xi=.02,scaling=1.)
+                                sigma=2,volatility=.05,xi=.02,scaling=1.,white_noise_ratio=1e-4)
     
     wgan_Trainer.run(lrd=args.lrd,lrg=args.lrg,\
                     traintotal=args.traintotal,testtotal=args.testtotal,\

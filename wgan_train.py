@@ -90,18 +90,23 @@ class wgan_trainer:
                  volatility:float=.05,
                  xi:float=.02,
                  scaling:float=1.,
+                 white_noise_ratio:float=1e-4,
                  normalize_factor:float=50.,
                  ngpu:int=0,
                  datapath='/mnt/DataB/hydro_simulations/data/',
-                 dir_checkpoint = '/mnt/DataA/checkpoints/leo/hydro/'):
-        self.netG = netG
-        self.netD = netD
+                 dir_checkpoint = '/mnt/DataA/checkpoints/leo/hydro/'):             
+        self.ngpu = ngpu
+        self.device = torch.device("cuda:0" if (torch.cuda.is_available() and self.ngpu > 0) else 'cpu')
+        
+        self.netG = netG.to(self.device)
+        self.netD = netD.to(self.device)
+        
         self.dep = dep        
         self.img_size = img_size
         self.manual_seed = manual_seed
         self.resize_option = resize_option
         self.noise_mode = noise_mode
-        self.ngpu = ngpu
+        
         self.G_losses  = []; self.D_losses = []; self.nrmse_train = list([]); self.l1_train = list([])
         self.Massdiffs = []; self.nrmse_val = []; self.l1_val = []
         self.bce_fake = [];  self.bce_real = []
@@ -117,6 +122,8 @@ class wgan_trainer:
         self.sigma = sigma
         self.xi = xi
         self.scaling = scaling
+        self.white_noise_ratio = white_noise_ratio
+        
         
     def empty_cache(self):
         torch.cuda.empty_cache()
@@ -125,7 +132,6 @@ class wgan_trainer:
     def validate(self,batchsize):
         testfile_num = len(self.testfiles)
         batchsize = min(testfile_num,batchsize)
-        device = torch.device("cuda:0" if (torch.cuda.is_available() and self.ngpu > 0) else 'cpu')
         # set the model in eval mode
         self.netD.eval()
         self.netG.eval()
@@ -138,16 +144,16 @@ class wgan_trainer:
                 dyn, noise = load_data_batch(fileind,self.testfiles,b_size=batchsize,dep=self.dep,img_size=self.img_size,\
                                             resize_option=self.resize_option,\
                                             noise_mode=self.noise_mode,normalize_factor = self.normalize_factor,\
-                                            volatility=self.volatility,sigma=self.sigma,xi=self.xi,scaling=self.scaling)
+                                            volatility=self.volatility,sigma=self.sigma,xi=self.xi,scaling=self.scaling,white_noise_ratio=self.white_noise_ratio)
                 fileind += batchsize
 
-                real_cpu = dyn.to(device)
-                noise    = noise.to(device)
+                real_cpu = dyn.to(self.device)
+                noise    = noise.to(self.device)
                 fake = self.netG(noise + real_cpu).clamp(min=0).detach()
                 fake[real_cpu==0] = 0
 
-                mass_fake = compute_mass(fake,device=device)
-                mass_real = compute_mass(real_cpu,device=device)
+                mass_fake = compute_mass(fake,device=self.device)
+                mass_real = compute_mass(real_cpu,device=self.device)
                 mass_diff = torch.divide(torch.abs(mass_fake - mass_real), mass_real).sum()
 
                 Mass_diff  = Mass_diff + mass_diff
@@ -187,7 +193,6 @@ class wgan_trainer:
         
         real_label = 1.
         fake_label = 0.
-        device = torch.device("cuda:0" if (torch.cuda.is_available() and self.ngpu > 0) else 'cpu')
         use_cuda = True if (torch.cuda.is_available() and self.ngpu > 0) else False        
         ncfiles = list([])
         for file in os.listdir(self.datapath):
@@ -235,9 +240,9 @@ class wgan_trainer:
                                                  b_size=b_size, dep=self.dep, img_size=self.img_size,\
                                                  resize_option=self.resize_option,\
                                                  noise_mode=self.noise_mode, normalize_factor=self.normalize_factor,\
-                                                 volatility=self.volatility,sigma=self.sigma,xi=self.xi,scaling=self.scaling)
-                    noise = noise.to(device)
-                    real_cpu = dyn.to(device)
+                                                 volatility=self.volatility,sigma=self.sigma,xi=self.xi,scaling=self.scaling,white_noise_ratio=self.white_noise_ratio)
+                    noise = noise.to(self.device)
+                    real_cpu = dyn.to(self.device)
                     fileind += b_size
 
                     # Generate fake image batch with G
@@ -284,9 +289,9 @@ class wgan_trainer:
 
                         d_loss = D_fake_2.mean() - D_real_2.mean() + gradient_penalty
 
-                        mass_fake = compute_mass(fake,device=device)
+                        mass_fake = compute_mass(fake,device=self.device)
                         mass_fake.retain_grad()
-                        mass_real = compute_mass(real_cpu,device=device)
+                        mass_real = compute_mass(real_cpu,device=self.device)
                         g_loss = -(1-weight_super)*d_loss + weight_super*L2(fake,real_cpu) + delta*weight_super*L1(fake,real_cpu) + weight_masscon*L2_loss(mass_fake,mass_real)
 
                         # Calculate gradients for G
@@ -306,7 +311,7 @@ class wgan_trainer:
                     ############################
                     # Validation
                     ############################
-                    if (b_size>abs(traintotal//2-fileind)) or  (fileind > traintotal-b_size) or ((epoch==0) and (global_step==0)):
+                    if (fileind > traintotal-b_size) or ((epoch==0) and (global_step==0)): # (b_size>abs(traintotal//2-fileind)) or  
                         massdiff,nrmse,l1err = self.validate(batchsize=b_size_test)
                         self.Massdiffs.append(massdiff.item())
                         self.nrmse_val.append(nrmse.item())

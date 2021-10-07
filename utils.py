@@ -77,10 +77,10 @@ def suppress_stdout():
 
 def noise_generate(frame, \
                    fl=0.006, fr=0.0179, f=0.01, c=0.1, cl=0.06,cr=0.21, \
-                   sigma=1e-1,scaling=1,\
+                   sigma=2,scaling=1,\
                    volatility=.04, xi=1,\
-                   clampval=12,\
-                   mode='linear',noisedata=noisedata):
+                   clampval=12, white_noise_ratio=.1,\
+                   mode='linear',noisedata=noisedata,abel_method='basex'):
     if mode == 'linear':
         factor = np.random.uniform(fl,fr,1) * scaling
         const  = np.random.uniform(cl,cr,1) * scaling
@@ -92,12 +92,12 @@ def noise_generate(frame, \
         noise = torch.ones_like(frame) * c * scaling
     elif mode == 'gaussian':
         if len(frame.shape) == 2:
-            noise_mag = sigma*frame.abs().max()
-            noise = noise_mag*torch.randn(frame.shape[0],frame.shape[1])
+            noise_mag = white_noise_ratio*frame.abs().max()
+            noise     = noise_mag*torch.randn(frame.shape[0],frame.shape[1])
         elif len(frame.shape) == 3: # assuming that there is only one channel
             noise = np.zeros_like(frame)
             for frame_ind in range(frame.shape[0]):
-                noise_mag            = sigma*frame[frame_ind,:,:].abs().max()
+                noise_mag            = white_noise_ratio*frame[frame_ind,:,:].abs().max()
                 noise[frame_ind,:,:] = noise_mag*torch.randn(frame.shape[1],frame.shape[2])
     elif mode == 'sampling':
         assert(clampval>0)
@@ -121,28 +121,26 @@ def noise_generate(frame, \
     elif mode == 'Abel-linear':        
         dyn_fullspan = torch_complete(frame)
         noise = torch.zeros_like(frame)
-        method = 'basex'
         assert(len(frame.shape)==3)
         heg = frame.shape[1]
         wid = frame.shape[2]
         ind = 0
         scaling_factor = np.random.rand()
         for img in dyn_fullspan:
-            img_abel = abel.Transform(img.numpy(), method=method, direction='forward',verbose=False).transform
+            img_abel = abel.Transform(img.numpy(), method=abel_method, direction='forward',verbose=False).transform
             scatter_abel = gaussian_filter(img_abel,sigma,order=0)
             eps = np.random.uniform(low=-0.05,high=0.05)
             img_abel_noisy = img_abel +  ( (1+eps)*  scaling_factor ) * scatter_abel
 #             img_abel_noisy = (1 + np.random.uniform(low=-volatility,high=volatility) ) * img_abel + \
 #                     np.random.uniform(low=-volatility,high=volatility) * np.mean(np.abs(img_abel.flatten()))
 #             img_abel_noisy = (1 + .04 ) * img_abel + .04 * np.mean(np.abs(img_abel.flatten()))
-            img_noisy = abel.Transform(img_abel_noisy, method=method, direction='backward',verbose=False).transform
+            img_noisy = abel.Transform(img_abel_noisy, method=abel_method, direction='backward',verbose=False).transform
             noise_fullspan = img_noisy - img.numpy()
             noise[ind,:,:] = torch.tensor(noise_fullspan[heg:,wid:])
             ind += 1
     elif mode == 'Abel-gaussian':        
         dyn_fullspan = torch_complete(frame)
         noise = torch.zeros_like(frame)
-        method = 'basex'
         assert(len(frame.shape)==3)
         heg = frame.shape[1]
         wid = frame.shape[2]
@@ -150,14 +148,37 @@ def noise_generate(frame, \
         scaling_factor = scaling # np.random.rand()
         for img in dyn_fullspan:
             with suppress_stdout():
-                img_abel = abel.Transform(img.numpy(), method=method, direction='forward',verbose=False).transform
+                img_abel = abel.Transform(img.numpy(), method=abel_method, direction='forward',verbose=False).transform
             D = exp_negative(img_abel,xi=xi)
             S = gaussian_filter(D,sigma,order=0)
             eps = np.random.uniform(low=-volatility,high=volatility)
             T = D + ( (1+eps)*  scaling_factor ) * S
             img_abel_noisy = exp_negative_inverse(T,xi=xi)
             with suppress_stdout():
-                img_noisy = abel.Transform(img_abel_noisy, method=method, direction='backward',verbose=False).transform
+                img_noisy = abel.Transform(img_abel_noisy, method=abel_method, direction='backward',verbose=False).transform
+            noise_fullspan = img_noisy - img.numpy()
+            noise[ind,:,:] = torch.tensor(noise_fullspan[heg:,wid:])
+            ind += 1
+    elif mode == 'Abel-gaussian-double':        
+        dyn_fullspan = torch_complete(frame)
+        noise = torch.zeros_like(frame)
+        assert(len(frame.shape)==3)
+        heg = frame.shape[1]
+        wid = frame.shape[2]
+        ind = 0
+        scaling_factor = scaling # np.random.rand()
+        for img in dyn_fullspan:
+            with suppress_stdout():
+                img_abel = abel.Transform(img.numpy(), method=abel_method, direction='forward',verbose=False).transform
+            D = exp_negative(img_abel,xi=xi)
+            S = gaussian_filter(D,sigma,order=0)
+            eps = np.random.uniform(low=-volatility,high=volatility)
+            T = D + ( (1+eps)*  scaling_factor ) * S
+            img_abel_noisy = exp_negative_inverse(T,xi=xi)
+            white_noise_magnitude = np.mean(img_abel_noisy) * white_noise_ratio
+            img_abel_noisy = img_abel_noisy + white_noise_magnitude * np.random.randn(*(img_abel_noisy.shape))
+            with suppress_stdout():
+                img_noisy = abel.Transform(img_abel_noisy, method=abel_method, direction='backward',verbose=False).transform
             noise_fullspan = img_noisy - img.numpy()
             noise[ind,:,:] = torch.tensor(noise_fullspan[heg:,wid:])
             ind += 1
@@ -209,7 +230,7 @@ def torch_complete(imgs):
 def load_data_batch(fileind,trainfiles,b_size=5,dep=8,img_size=320,\
                     resize_option=False,newsize=256,\
                     noise_mode='const_rand',normalize_factor=50,\
-                    sigma=1,volatility=.04,xi=.02,scaling=1.):
+                    sigma=2,volatility=.04,xi=.02,scaling=1.,white_noise_ratio=.1):
     traintotal = len(trainfiles)
     assert(dep<41)
     time_pts = torch.round(torch.linspace(0,40,dep)).int() 
@@ -239,7 +260,7 @@ def load_data_batch(fileind,trainfiles,b_size=5,dep=8,img_size=320,\
         dyn[bfile,0,:,:,:]   = dyn[bfile,0,:,:,:] / normalize_factor
         noise[bfile,0,:,:,:] = noise_generate(dyn[bfile,0,:,:,:],mode=noise_mode,\
                                               scaling=scaling,\
-                                              sigma=sigma,volatility=volatility,xi=xi) # scaling = dyn[bfile,0,:,:,:].max()
+                                              sigma=sigma,volatility=volatility,xi=xi,white_noise_ratio=white_noise_ratio) # scaling = dyn[bfile,0,:,:,:].max()
         sim.close()
         bfile += 1
     return dyn, noise
@@ -292,71 +313,133 @@ def rolling_mean(x,window):
     cumsum = np.cumsum(np.insert(x, 0, 0))
     return (cumsum[window:] - cumsum[:-window]) / float(window)
 
-def visualization(G_losses,D_losses,val_losses,nrmse_=None,l1err_=None,linferr_=None,\
-                  log_loss=False,log_val=False,log_err=False,window=0):
-    fig,axs = plt.subplots(3,1,figsize=(10,8))
-    axs[0].set_xlabel('iters', fontsize=16)
-    axs[0].set_ylabel('G loss', color='r', fontsize=16)
-    if window > 0:
-        axs[0].plot(rolling_mean(G_losses,window), color='r')
-    else:
-        axs[0].plot(G_losses, color='r')
-    axs[0].tick_params(axis='x', labelsize='large')
-    axs[0].tick_params(axis='y', labelcolor='r',labelsize='large')
-    if log_loss:
-        axs[0].set_yscale('log')
+# def visualization(G_losses,D_losses,val_losses,nrmse_=None,l1err_=None,linferr_=None,\
+#                   log_loss=False,log_val=False,log_err=False,window=0):
+#     fig,axs = plt.subplots(3,1,figsize=(10,8))
+#     axs[0].set_xlabel('iters', fontsize=16)
+#     axs[0].set_ylabel('G loss', color='r', fontsize=16)
+#     if window > 0:
+#         axs[0].plot(rolling_mean(G_losses,window), color='r')
+#     else:
+#         axs[0].plot(G_losses, color='r')
+#     axs[0].tick_params(axis='x', labelsize='large')
+#     axs[0].tick_params(axis='y', labelcolor='r',labelsize='large')
+#     if log_loss:
+#         axs[0].set_yscale('log')
     
-    axs[1].set_xlabel('iters', fontsize=16)
-    axs[1].set_ylabel('D loss', color='b', fontsize=16)
-    if window > 0:
-        axs[1].plot(rolling_mean(D_losses,window), color='b')
-    else:
-        axs[1].plot(D_losses, color='b')
-    axs[1].tick_params(axis='y', labelcolor='b',labelsize='large')
-    if log_loss:
-        axs[1].set_yscale('log')
+#     axs[1].set_xlabel('iters', fontsize=16)
+#     axs[1].set_ylabel('D loss', color='b', fontsize=16)
+#     if window > 0:
+#         axs[1].plot(rolling_mean(D_losses,window), color='b')
+#     else:
+#         axs[1].plot(D_losses, color='b')
+#     axs[1].tick_params(axis='y', labelcolor='b',labelsize='large')
+#     if log_loss:
+#         axs[1].set_yscale('log')
 
-    axs[2].set_xlabel('iters', fontsize=16)
-    axs[2].set_ylabel('validation loss', fontsize=16)
-    axs[2].plot(val_losses)
-    if log_val:
-        axs[2].set_yscale('log')
-    axs[2].tick_params(axis='x', labelsize='large')
-    axs[2].tick_params(axis='y', labelsize='large')
+#     axs[2].set_xlabel('iters', fontsize=16)
+#     axs[2].set_ylabel('validation loss', fontsize=16)
+#     axs[2].plot(val_losses)
+#     if log_val:
+#         axs[2].set_yscale('log')
+#     axs[2].tick_params(axis='x', labelsize='large')
+#     axs[2].tick_params(axis='y', labelsize='large')
+#     plt.show()
+    
+#     if nrmse_ is not None:
+#         plt.figure()        
+#         plt.xlabel('iters', fontsize=16)
+#         plt.ylabel('nrmse, averaged', fontsize=16)
+#         plt.plot(nrmse_)
+#         if log_err:
+#             plt.yscale('log')
+#         plt.tick_params(axis='x', labelsize='large')
+#         plt.tick_params(axis='y', labelsize='large')
+#         plt.show()
+#     if l1err_ is not None:
+#         plt.figure()       
+#         plt.xlabel('iters', fontsize=16)
+#         plt.ylabel('rel. l1 error, averaged', fontsize=16)
+#         plt.plot(l1err_)
+#         if log_err:
+#             plt.yscale('log')
+#         plt.tick_params(axis='x', labelsize='large')
+#         plt.tick_params(axis='y', labelsize='large')
+#         plt.show()
+        
+#     if linferr_ is not None:
+#         plt.figure()        
+#         plt.xlabel('iters', fontsize=16)
+#         plt.ylabel('rel. linf error, averaged', fontsize=16)
+#         plt.plot(linferr_)
+#         if log_err:
+#             plt.yscale('log')
+#         plt.tick_params(axis='x', labelsize='large')
+#         plt.tick_params(axis='y', labelsize='large')   
+#         plt.show()
+
+def visualization(data,labels,\
+                  log=False,window=0,figsize=(15,25),fontsize=16):
+    nums = len(data)
+    colors = ['r','b','g','tab:orange','tab:purple','tab:brown','k',\
+              'deeppink','darkblue','darkorange','darkslategray','darkseagreen']
+    fig,axs = plt.subplots(nums,1,figsize=figsize)
+    for ind in range(nums):
+        axs[ind].set_xlabel('iters', fontsize=fontsize)
+        axs[ind].set_ylabel(labels[ind], color=colors[ind], fontsize=fontsize)
+        if window > 0:
+            axs[ind].plot(rolling_mean(data[labels[ind]],window), color=colors[ind])
+        else:
+            axs[ind].plot(data[labels[ind]], color=colors[ind])
+        axs[ind].tick_params(axis='x', labelsize='large')
+        axs[ind].tick_params(axis='y', labelcolor=colors[ind],labelsize='large')
+        if log:
+            axs[ind].set_yscale('log')
     plt.show()
     
-    if nrmse_ is not None:
-        plt.figure()        
-        plt.xlabel('iters', fontsize=16)
-        plt.ylabel('nrmse, averaged', fontsize=16)
-        plt.plot(nrmse_)
-        if log_err:
-            plt.yscale('log')
-        plt.tick_params(axis='x', labelsize='large')
-        plt.tick_params(axis='y', labelsize='large')
-        plt.show()
-    if l1err_ is not None:
-        plt.figure()       
-        plt.xlabel('iters', fontsize=16)
-        plt.ylabel('rel. l1 error, averaged', fontsize=16)
-        plt.plot(l1err_)
-        if log_err:
-            plt.yscale('log')
-        plt.tick_params(axis='x', labelsize='large')
-        plt.tick_params(axis='y', labelsize='large')
-        plt.show()
-        
-    if linferr_ is not None:
-        plt.figure()        
-        plt.xlabel('iters', fontsize=16)
-        plt.ylabel('rel. linf error, averaged', fontsize=16)
-        plt.plot(linferr_)
-        if log_err:
-            plt.yscale('log')
-        plt.tick_params(axis='x', labelsize='large')
-        plt.tick_params(axis='y', labelsize='large')   
-        plt.show()
+def TVA(X):
+    '''
+    X is in the format NCDHW
+    '''
+    assert(len(X.shape)==5)
+    diff1 = X[:,:,:,1:,:] - X[:,:,:,0:-1,:]
+    diff2 = X[:,:,:,:,1:] - X[:,:,:,:,0:-1]
+    tva   = torch.norm(diff1,p=1) + torch.norm(diff2,p=1)
+    return tva
 
+def postprocessor(noisy_dyn,truemass,\
+                  lr=1e-3,maxIter=2000,\
+                  weight_datafid=1, weight_masscon=1e2,weight_TVA=1e-4,\
+                  print_every=50,dyn=None):    
+    # loss function = ||x - G(noisy_dyn)||_2^2 + L *|| compute_mass(x) - true_mass ||_2^2
+    maxIter = int(maxIter)
+    if dyn is None: # ground truth not available
+        denoised_dyn_init = copy.deepcopy(noisy_dyn) 
+        dyn_new           = copy.deepcopy(noisy_dyn) + torch.randn(noisy_dyn.shape)*1e-5
+    else: # ground truth dyn available
+        denoised_dyn_init = copy.deepcopy(dyn)
+        dyn_new           = copy.deepcopy(noisy_dyn)
+    dyn_new.requires_grad = True
+    optimizer = optim.RMSprop( [{'params': dyn_new}],lr=lr,weight_decay=0)
+    for t in range(maxIter):
+        mass_denoised = compute_mass(dyn_new)
+        data_fidelity = lpnorm(dyn_new , denoised_dyn_init, p='fro', mode='mean')
+        mass_fidelity = torch.norm(mass_denoised - truemass)  
+        tva           = TVA(dyn_new)
+        
+        loss =  weight_datafid * data_fidelity + weight_masscon * mass_fidelity + weight_TVA * tva
+        if t%print_every==0:
+            print(f'iter {t:4d}, loss total {loss.data:5f}, data fid. {data_fidelity:5f}, mass fid. {weight_masscon * mass_fidelity:5f}, TVA {weight_TVA * tva:5f}')
+        
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        if dyn is not None:
+            with torch.no_grad():
+                dyn_new[dyn==0] = 0
+
+    return dyn_new.data
+        
 def aver_mse(fake,real):
     '''
     assume both input are 5-dimensional tensors
