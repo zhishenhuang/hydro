@@ -22,7 +22,7 @@ def get_args():
     parser = argparse.ArgumentParser(description='Train GAN on hydro simulation data',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     
-    parser.add_argument('-e', '--epochs', metavar='E', type=int, default=20,
+    parser.add_argument('-e', '--epochs', metavar='E', type=int, default=7,
                         help='Number of epochs', dest='epochs')
     parser.add_argument('-b', '--batch-size', metavar='B', type=int, nargs='?', default=2,
                         help='Batch size', dest='b_size')
@@ -41,20 +41,27 @@ def get_args():
     parser.add_argument('-ted','--testtotal',type=int,default=100,
                         help='total amount of files for testing', dest='testtotal')
     
-#     parser.add_argument('-vf','--validate-frequency',type=int,default=38,
-#                         help='print every # iteration',dest='validate_every')
+    parser.add_argument('-es','--epoch-start',type=int,default=0,
+                        help='starting epoch', dest='epoch_start')
     
     parser.add_argument('-wsup','--weight-super',type=float,default=0.999,
                         help='initial weight for data fidelity loss/supervised loss term in the error of G net',dest='weight_super')
+    parser.add_argument('-wsupdec','--weight-super-decay',type=float,default=0.97,
+                        help='decay per epoch for weight of supervised learning term',dest='weight_super_decay')
     parser.add_argument('-wmasscon','--weight-masscon',type=float,default=10,
                         help='weight for mass conservation term in the error of G net',dest='weight_masscon')
     parser.add_argument('-wgrad','--weight-grad-pen',type=float,default=10,
                         help='weight of gradient penalty in D loss',dest='weight_gradpen')
     
+    parser.add_argument('-scaling','--scaling-noise',type=float,default=1.,
+                        help='scaling of noise in Abel domain',dest='scaling')
+    
     parser.add_argument('-g','--gnet-path',type=str,default=None,
                         help='path to load checkpoints of generator network', dest='gpath')
     parser.add_argument('-d','--dnet-path',type=str,default=None,
-                        help='path to laod checkpoints of discriminator network',dest='dpath')
+                        help='path to load checkpoints of discriminator network',dest='dpath')
+    parser.add_argument('-hp','--hist-path',type=str,default=None,
+                        help='path to load training history record',dest='hpath')
     
     parser.add_argument('-dchans','--dnet-channels',type=int,default=4,
                         help='number of channels of first conv layer in D net',dest='d_chans')
@@ -124,8 +131,9 @@ if __name__ == '__main__':
     wgan_Trainer = wgan_trainer(gnet,dnet,dep=dep,img_size=img_size,manual_seed=args.manualSeed,\
                                 resize_option=resize_option,noise_mode=args.noise_mode,\
                                 normalize_factor=normalize_factor,ngpu=args.ngpu,\
-                                datapath=datapath,dir_checkpoint=dir_checkpoint,\
-                                sigma=2,volatility=.05,xi=.02,scaling=1.,white_noise_ratio=1e-4)
+                                datapath=datapath,dir_checkpoint=dir_checkpoint,dir_hist=args.hpath,\
+                                weight_super_decay=args.weight_super_decay,\
+                                sigma=2,volatility=.05,xi=.02,scaling=args.scaling,white_noise_ratio=1e-4)
     
     wgan_Trainer.run(lrd=args.lrd,lrg=args.lrg,\
                     traintotal=args.traintotal,testtotal=args.testtotal,\
@@ -133,6 +141,6 @@ if __name__ == '__main__':
                     update_D_every=args.dup,update_G_every=args.gup,\
                     weight_masscon=args.weight_masscon,weight_super=args.weight_super,\
                     weight_gradpen=args.weight_gradpen,\
-                    print_every=10,\
+                    print_every=10,epoch_start=args.epoch_start,\
                     make_plot=False,\
                     save_cp=True)

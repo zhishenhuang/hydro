@@ -7,12 +7,13 @@ from scipy.ndimage import gaussian_filter
 import xarray as xr
 import random
 import abel
-import importlib
-import logging
+# import importlib
+# import logging
 import os
 import shutil
 import sys
-
+import copy
+import torch.optim as optim
 import h5py
 
 plt.ioff()
@@ -265,39 +266,50 @@ def load_data_batch(fileind,trainfiles,b_size=5,dep=8,img_size=320,\
         bfile += 1
     return dyn, noise
 
-def illustrate(imgs,full=False,vmin=0,vmax=1.1,title=None,fontsize=12,figsize=(18,9),cbar_shrink=.9,time_pts=None):
+def illustrate(imgs,\
+               vmin=0,vmax=1.1,\
+               title=None,\
+               fontsize=12,figsize=(18,9),cbar_shrink=.9,dpi=150,\
+               time_pts=None,\
+               save_path=None,\
+               title_on=True,\
+               nrows=2,ncols=4,\
+               dep=8,\
+               complete_on=False):
     samp = imgs.clone().detach()
-#     vmax = torch.max(torch.flatten(samp))
-#     vmin = torch.min(torch.flatten(samp))
-    fig, axs = plt.subplots(nrows=2, ncols=4, sharex=False, figsize=figsize)
-    if vmin==-np.inf or vmax==np.inf:
-        if full:
+    fig, axs = plt.subplots(nrows=nrows, ncols=ncols, sharex=False, figsize=figsize)
+    if (vmin==-np.inf) or (vmax==np.inf):
+        if complete_on:
             vmax = torch.max(complete(samp[0,0,:,:,:]))
             vmin = torch.min(complete(samp[0,0,:,:,:]))
         else:
             vmax = torch.max(samp[0,0,:,:,:])
             vmin = torch.min(samp[0,0,:,:,:])
-    for t in range(8):
+    assert(dep<=nrows*ncols)
+    for t in range(dep):
         if time_pts is not None:
-            axs[t//4][t%4].set_title('t = ' + str(time_pts[t].item()))
+            axs[t//ncols][t%ncols].set_title('t = ' + str(time_pts[t].item()))
         else:
-            axs[t//4][t%4].set_title('t = ' + str(t))
-        if full:
-            hd = axs[t//4][t%4].imshow(complete(samp[0,0,t,:,:]),vmin=vmin, vmax=vmax,origin='lower')
+            axs[t//ncols][t%ncols].set_title('t = ' + str(t))
+        if complete_on:
+            hd = axs[t//ncols][t%ncols].imshow(complete(samp[0,0,t,:,:]),vmin=vmin, vmax=vmax,origin='lower')
         else:
-            hd = axs[t//4][t%4].imshow(samp[0,0,t,:,:],vmin=vmin, vmax=vmax,origin='lower')
+            hd = axs[t//ncols][t%ncols].imshow(samp[0,0,t,:,:],vmin=vmin, vmax=vmax,origin='lower')
 #         divider = make_axes_locatable(axs[t//4][t%4])
 #         cax = divider.append_axes("right", size="5%", pad=0.05)
 #         fig.colorbar(hd,cax=cax)
     cbar = fig.colorbar(hd, ax=axs.ravel().tolist(), shrink=cbar_shrink)
     cbar.set_ticks(np.arange(vmin, vmax, (vmax-vmin)/10))
-    if title is None:
-        fig.suptitle('Generated dynamics, ' + str(t) + ' consecutive frames')
-    else:
-        fig.suptitle(title)
+    if title_on:
+        if title is None:
+            fig.suptitle('Generated dynamics, ' + str(t) + ' consecutive frames')
+        else:
+            fig.suptitle(title)
     plt.rcParams.update({'font.size': fontsize})
 #     plt.tight_layout()
     plt.show()
+    if save_path is not None:
+        plt.savefig(save_path,format='eps',dpi=dpi,transparent=True,bbox_inches='tight')
     print('\n')
 
 def rolling_mean(x,window):
@@ -410,27 +422,30 @@ def TVA(X):
 def postprocessor(noisy_dyn,truemass,\
                   lr=1e-3,maxIter=2000,\
                   weight_datafid=1, weight_masscon=1e2,weight_TVA=1e-4,\
-                  print_every=50,dyn=None):    
-    # loss function = ||x - G(noisy_dyn)||_2^2 + L *|| compute_mass(x) - true_mass ||_2^2
+                  print_every=50,dyn=None,device=torch.device('cpu'),verbose=True):    
+    # loss function = L_datafid * ||x - G(noisy_dyn)||_2^2 + L_massfid *|| compute_mass(x) - true_mass ||_2^2 + L_TVA * TVA(x)
+    
     maxIter = int(maxIter)
     if dyn is None: # ground truth not available
-        denoised_dyn_init = copy.deepcopy(noisy_dyn) 
-        dyn_new           = copy.deepcopy(noisy_dyn) + torch.randn(noisy_dyn.shape)*1e-5
+        denoised_dyn_init = copy.deepcopy(noisy_dyn).to(device)
+        dyn_new           = copy.deepcopy(noisy_dyn).to(device) + torch.randn(noisy_dyn.shape,device=device)*1e-5
     else: # ground truth dyn available
-        denoised_dyn_init = copy.deepcopy(dyn)
-        dyn_new           = copy.deepcopy(noisy_dyn)
-    dyn_new.requires_grad = True
-    optimizer = optim.RMSprop( [{'params': dyn_new}],lr=lr,weight_decay=0)
+        denoised_dyn_init = copy.deepcopy(dyn).to(device)
+        dyn_new           = copy.deepcopy(noisy_dyn).to(device)
+    
+    dyn_new.requires_grad = True  
+    optimizer = optim.RMSprop( [{'params': dyn_new}],lr=lr,weight_decay=0 )
     for t in range(maxIter):
-        mass_denoised = compute_mass(dyn_new)
+        mass_denoised = compute_mass(dyn_new,device=device)
         data_fidelity = lpnorm(dyn_new , denoised_dyn_init, p='fro', mode='mean')
         mass_fidelity = torch.norm(mass_denoised - truemass)  
         tva           = TVA(dyn_new)
         
         loss =  weight_datafid * data_fidelity + weight_masscon * mass_fidelity + weight_TVA * tva
-        if t%print_every==0:
-            print(f'iter {t:4d}, loss total {loss.data:5f}, data fid. {data_fidelity:5f}, mass fid. {weight_masscon * mass_fidelity:5f}, TVA {weight_TVA * tva:5f}')
         
+        if (t%print_every==0) and verbose:
+            print(f'iter {t:4d}, loss total {loss.data:5f}, data fid. {data_fidelity:5f}, mass fid. {weight_masscon * mass_fidelity:5f}, TVA {weight_TVA * tva:5f}')
+        breakpoint()
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
