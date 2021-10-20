@@ -439,13 +439,11 @@ def postprocessor(noisy_dyn,truemass,\
         mass_denoised = compute_mass(dyn_new,device=device)
         data_fidelity = lpnorm(dyn_new , denoised_dyn_init, p='fro', mode='mean')
         mass_fidelity = torch.norm(mass_denoised - truemass)  
-        tva           = TVA(dyn_new)
-        
-        loss =  weight_datafid * data_fidelity + weight_masscon * mass_fidelity + weight_TVA * tva
-        
+        tva           = TVA(dyn_new)        
+        loss =  weight_datafid * data_fidelity + weight_masscon * mass_fidelity + weight_TVA * tva        
         if (t%print_every==0) and verbose:
             print(f'iter {t:4d}, loss total {loss.data:5f}, data fid. {data_fidelity:5f}, mass fid. {weight_masscon * mass_fidelity:5f}, TVA {weight_TVA * tva:5f}')
-        breakpoint()
+
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -484,3 +482,98 @@ def aver_linf(fake,real):
     reldev   = torch.max(reldev,dim=2)[0]
     nlinferr = torch.sum(reldev,dim=(0))/fake.shape[0]
     return nlinferr
+
+
+def test_(netG, testfiles,\
+          batchsize=5,dep=8,img_size=320,\
+          noise_mode='Abel-gaussian',\
+          normalize_factor=50,\
+          volatility=.05,sigma=2,xi=.02,scaling=1,white_noise_ratio=1e-4,device=torch.device('cpu'),\
+          resize_option=False,postprocess=False,\
+          maxIter=7e3,weight_datafid=0,weight_masscon=1e2,weight_TVA=1e-4):
+    testfile_num = len(testfiles)
+    batchsize = min(testfile_num,batchsize)
+    # set the model in eval mode
+    netG.to(device)
+    netG.eval()
+    Mass_diff = np.zeros(len(testfiles)); nrmse = np.zeros(len(testfiles)); nl1err = np.zeros(len(testfiles))
+
+    # evaluate on validation set
+    fileind = 0
+    batch_step = 0    
+    while fileind < testfile_num:   
+        with torch.no_grad():
+            dyn, noise = load_data_batch(fileind,testfiles,b_size=batchsize,dep=dep,img_size=img_size,\
+                                        resize_option=resize_option,\
+                                        noise_mode=noise_mode,normalize_factor = normalize_factor,\
+                                        volatility=volatility,sigma=sigma,xi=xi,scaling=scaling,\
+                                         white_noise_ratio=white_noise_ratio)
+            real_cpu = dyn.to(device)
+            noise    = noise.to(device)        
+            fake = netG(noise + real_cpu).clamp(min=0).detach()
+            fake[real_cpu==0] = 0
+
+            mass_real = compute_mass(real_cpu,device=device)
+        if postprocess:
+            fake = postprocessor(fake,mass_real,\
+                             lr=1e-5,\
+                             weight_datafid=weight_datafid, weight_masscon=weight_masscon, weight_TVA=weight_TVA,\
+                             dyn=dyn,\
+                             maxIter=maxIter,\
+                             print_every=500,device=device) # denoised_dyn
+
+        mass_fake = compute_mass(fake,device=device)
+        mass_diff = torch.divide(torch.abs(mass_fake - mass_real), mass_real).sum()/dep
+        for ind in range(batchsize):
+            Mass_diff[fileind+ind] = mass_diff
+            nrmse[fileind+ind]     = aver_mse(fake[ind:ind+1,:,:,:,:],real_cpu[ind:ind+1,:,:,:,:])
+            nl1err[fileind+ind]    = aver_l1(fake[ind:ind+1,:,:,:,:],real_cpu[ind:ind+1,:,:,:,:])
+        del dyn, real_cpu, noise 
+        fileind += batchsize
+        print(f'[{fileind}/{testfile_num}]')
+    return Mass_diff, nrmse, nl1err 
+
+def test_baseline(testfiles,\
+          batchsize=5,dep=8,img_size=320,\
+          noise_mode='Abel-gaussian',\
+          normalize_factor=50,\
+          volatility=.05,sigma=2,xi=.02,scaling=1,white_noise_ratio=1e-4,device=torch.device('cpu'),\
+          resize_option=False,\
+          lr=1e-5,weight_datafid=0,weight_masscon=1e2,weight_TVA=1e-4,maxIter=5e3):
+    testfile_num = len(testfiles)
+    batchsize = min(testfile_num,batchsize)
+    
+    Mass_diff = np.zeros(len(testfiles)); nrmse = np.zeros(len(testfiles)); nl1err = np.zeros(len(testfiles))
+    # evaluate on validation set
+    fileind = 0
+    batch_step = 0
+    while fileind < testfile_num:
+        print(f'Current iter: [{fileind}/{testfile_num}]')
+        dyn, noise = load_data_batch(fileind,testfiles,b_size=batchsize,dep=dep,img_size=img_size,\
+                                        resize_option=resize_option,\
+                                        noise_mode=noise_mode,normalize_factor=normalize_factor,\
+                                        volatility=volatility,sigma=sigma,xi=xi,scaling=scaling,\
+                                        white_noise_ratio=white_noise_ratio)
+        real_cpu = dyn.to(device)
+        noise    = noise.to(device)
+        noisy_sg = noise + real_cpu
+
+        truemass = compute_mass(real_cpu,device=device)
+        denoised_dyn = postprocessor(noisy_sg, truemass,\
+                                     lr=lr,\
+                                     weight_datafid=weight_datafid, weight_masscon=weight_masscon, weight_TVA=weight_TVA,\
+                                     dyn=real_cpu,\
+                                     maxIter=maxIter,\
+                                     verbose=False,device=device)
+
+        mass_fake = compute_mass(denoised_dyn,device=device)
+        mass_real = compute_mass(real_cpu,device=device)
+        mass_diff = torch.divide(torch.abs(mass_fake - mass_real), mass_real).sum()/dep
+        for ind in range(batchsize):
+            Mass_diff[fileind+ind] = mass_diff
+            nrmse[fileind+ind]     = aver_mse(denoised_dyn[ind:ind+1,:,:,:,:],real_cpu[ind:ind+1,:,:,:,:])
+            nl1err[fileind+ind]    = aver_l1(denoised_dyn[ind:ind+1,:,:,:,:],real_cpu[ind:ind+1,:,:,:,:])
+        del dyn, real_cpu, noise 
+        fileind += batchsize
+            
+    return Mass_diff, nrmse, nl1err

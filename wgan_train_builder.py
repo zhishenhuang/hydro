@@ -68,7 +68,7 @@ def get_args():
     parser.add_argument('-glevels','--gnet-levels',type=int,default=4,
                         help='number of levels in G net',dest='g_levels')
     
-    parser.add_argument('-dup','--update-d-every',type=int,default=1,
+    parser.add_argument('-dup','--update-d-every',type=float,default=np.inf,
                         help='update d every # steps',dest='dup')
     parser.add_argument('-gup','--update-g-every',type=int,default=1,
                         help='update g every # steps',dest='gup')

@@ -131,7 +131,7 @@ class wgan_trainer:
             self.G_losses  = []; self.D_losses = []; self.nrmse_train = list([]); self.l1_train = list([])
             self.Massdiffs = []; self.nrmse_val = []; self.l1_val = []
             self.bce_fake = [];  self.bce_real = []
-            print('New training ~)'
+            print('New training ~')
         else:
             histRec = np.load(self.dir_hist)
             self.G_losses = list(histRec[g_loss]); self.D_losses = list(histRec[d_loss])
@@ -139,7 +139,7 @@ class wgan_trainer:
             self.Massdiffs = list(histRec[Massdiffs])
             self.nrmse_val = list(histRec[nrmse_val]); self.l1_val = list(histRec[l1_val])
             self.bce_fake = list(histRec[bce_fake]);  self.bce_real = list(histRec[bce_real])
-            print('history of existing training record successfully loaded~)'      
+            print('history of existing training record successfully loaded~' )     
         
     def empty_cache(self):
         torch.cuda.empty_cache()
