@@ -130,7 +130,7 @@ def noise_generate(frame, \
         for img in dyn_fullspan:
             img_abel = abel.Transform(img.numpy(), method=abel_method, direction='forward',verbose=False).transform
             scatter_abel = gaussian_filter(img_abel,sigma,order=0)
-            eps = np.random.uniform(low=-0.05,high=0.05)
+            eps = np.random.uniform(low=-volatility,high=volatility)
             img_abel_noisy = img_abel +  ( (1+eps)*  scaling_factor ) * scatter_abel
 #             img_abel_noisy = (1 + np.random.uniform(low=-volatility,high=volatility) ) * img_abel + \
 #                     np.random.uniform(low=-volatility,high=volatility) * np.mean(np.abs(img_abel.flatten()))
@@ -264,6 +264,7 @@ def load_data_batch(fileind,trainfiles,b_size=5,dep=8,img_size=320,\
                                               sigma=sigma,volatility=volatility,xi=xi,white_noise_ratio=white_noise_ratio) # scaling = dyn[bfile,0,:,:,:].max()
         sim.close()
         bfile += 1
+    noise[dyn==0] = 0
     return dyn, noise
 
 def illustrate(imgs,\
@@ -525,6 +526,8 @@ def test_(netG, testfiles,\
         mass_fake = compute_mass(fake,device=device)
         mass_diff = torch.divide(torch.abs(mass_fake - mass_real), mass_real).sum()/dep
         for ind in range(batchsize):
+            if fileind+ind>=len(testfiles):
+                break
             Mass_diff[fileind+ind] = mass_diff
             nrmse[fileind+ind]     = aver_mse(fake[ind:ind+1,:,:,:,:],real_cpu[ind:ind+1,:,:,:,:])
             nl1err[fileind+ind]    = aver_l1(fake[ind:ind+1,:,:,:,:],real_cpu[ind:ind+1,:,:,:,:])

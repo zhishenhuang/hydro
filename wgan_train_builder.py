@@ -22,11 +22,11 @@ def get_args():
     parser = argparse.ArgumentParser(description='Train GAN on hydro simulation data',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     
-    parser.add_argument('-e', '--epochs', metavar='E', type=int, default=7,
+    parser.add_argument('-e', '--epochs', metavar='E', type=int, default=10,
                         help='Number of epochs', dest='epochs')
-    parser.add_argument('-b', '--batch-size', metavar='B', type=int, nargs='?', default=2,
+    parser.add_argument('-b', '--batch-size', metavar='B', type=int, nargs='?', default=3,
                         help='Batch size', dest='b_size')
-    parser.add_argument('-bt', '--batch-size-test', metavar='BT', type=int, nargs='?', default=2,
+    parser.add_argument('-bt', '--batch-size-test', metavar='BT', type=int, nargs='?', default=3,
                         help='Batch size validation', dest='b_size_test')
     parser.add_argument('-lrd', '--learning-rate-d', metavar='LRD', type=float, nargs='?', default=1e-6,
                         help='Learning rate for discriminator', dest='lrd')
@@ -44,7 +44,7 @@ def get_args():
     parser.add_argument('-es','--epoch-start',type=int,default=0,
                         help='starting epoch', dest='epoch_start')
     
-    parser.add_argument('-wsup','--weight-super',type=float,default=0.999,
+    parser.add_argument('-wsup','--weight-super',type=float,default=0.99,
                         help='initial weight for data fidelity loss/supervised loss term in the error of G net',dest='weight_super')
     parser.add_argument('-wsupdec','--weight-super-decay',type=float,default=0.97,
                         help='decay per epoch for weight of supervised learning term',dest='weight_super_decay')
@@ -53,7 +53,7 @@ def get_args():
     parser.add_argument('-wgrad','--weight-grad-pen',type=float,default=10,
                         help='weight of gradient penalty in D loss',dest='weight_gradpen')
     
-    parser.add_argument('-scaling','--scaling-noise',type=float,default=1.,
+    parser.add_argument('-scaling','--scaling-noise',type=float,default=1,
                         help='scaling of noise in Abel domain',dest='scaling')
     
     parser.add_argument('-g','--gnet-path',type=str,default=None,
@@ -68,15 +68,17 @@ def get_args():
     parser.add_argument('-glevels','--gnet-levels',type=int,default=4,
                         help='number of levels in G net',dest='g_levels')
     
-    parser.add_argument('-dup','--update-d-every',type=float,default=np.inf,
+    parser.add_argument('-dup','--update-d-every',type=float,default=1,
                         help='update d every # steps',dest='dup')
     parser.add_argument('-gup','--update-g-every',type=int,default=1,
                         help='update g every # steps',dest='gup')
     
-    parser.add_argument('-nm', '--noise-mode', type=str, default="Abel-gaussian-double",
+    parser.add_argument('-nm', '--noise-mode', type=str, default="Abel-gaussian",
                         help='noise mode', dest='noise_mode')
     parser.add_argument('-ngpu', '--num-gpu', type=int, default=1,
                         help='number of GPUs', dest='ngpu')
+    parser.add_argument('-pg', '--pure-gan', type=bool, default=False,
+                        help='pure GAN', dest='pure_gan')
     return parser.parse_args()
 
 
@@ -105,7 +107,7 @@ if __name__ == '__main__':
     ############################
     ### initialization of two networks
     ############################
-    dnet = Discriminator(ndf=args.d_chans,sigmoid_on=True,imgsize=(dep,img_size,img_size)).to(device)
+    dnet = Discriminator(ndf=args.d_chans,sigmoid_on=True,imgsize=(dep,img_size,img_size))
     if args.dpath is None:
         # Apply the weights_init function to randomly initialize all weights
         #  to mean=0, stdev=0.2.
@@ -116,7 +118,7 @@ if __name__ == '__main__':
         dnet.load_state_dict(checkpoint['model_state_dict'])
         print(f'D net loaded from {args.dpath} successfully!\n')    
         
-    gnet = ResidualUNet3D(1,1,num_levels=args.g_levels,is_segmentation=False,final_sigmoid=False).to(device)
+    gnet = ResidualUNet3D(1,1,num_levels=args.g_levels,is_segmentation=False,final_sigmoid=False)
     if args.gpath is not None:
         checkpoint = torch.load(args.gpath)
         gnet.load_state_dict(checkpoint['model_state_dict'],strict=True)
@@ -133,7 +135,8 @@ if __name__ == '__main__':
                                 normalize_factor=normalize_factor,ngpu=args.ngpu,\
                                 datapath=datapath,dir_checkpoint=dir_checkpoint,dir_hist=args.hpath,\
                                 weight_super_decay=args.weight_super_decay,\
-                                sigma=2,volatility=.05,xi=.02,scaling=args.scaling,white_noise_ratio=1e-4)
+                                sigma=2,volatility=.05,xi=.02,scaling=args.scaling,white_noise_ratio=1e-4,\
+                                pure_gan=args.pure_gan)
     
     wgan_Trainer.run(lrd=args.lrd,lrg=args.lrg,\
                     traintotal=args.traintotal,testtotal=args.testtotal,\

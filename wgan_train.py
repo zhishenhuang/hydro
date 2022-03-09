@@ -96,9 +96,10 @@ class wgan_trainer:
                  ngpu:int=0,
                  datapath:str='/mnt/DataB/hydro_simulations/data/',
                  dir_checkpoint:str = '/mnt/DataA/checkpoints/leo/hydro/',
-                 dir_hist=None):             
+                 dir_hist=None,
+                 pure_gan=False):             
         self.ngpu = ngpu
-        self.device = torch.device("cuda:0" if (torch.cuda.is_available() and self.ngpu > 0) else 'cpu')
+        self.device = torch.device("cuda:0" if (torch.cuda.is_available() and (self.ngpu > 0)) else 'cpu')
         
         self.netG = netG.to(self.device)
         self.netD = netD.to(self.device)
@@ -134,12 +135,13 @@ class wgan_trainer:
             print('New training ~')
         else:
             histRec = np.load(self.dir_hist)
-            self.G_losses = list(histRec[g_loss]); self.D_losses = list(histRec[d_loss])
-            self.nrmse_train = list(histRec[nrmse_train]); self.l1_train = list(histRec[l1_train])
-            self.Massdiffs = list(histRec[Massdiffs])
-            self.nrmse_val = list(histRec[nrmse_val]); self.l1_val = list(histRec[l1_val])
-            self.bce_fake = list(histRec[bce_fake]);  self.bce_real = list(histRec[bce_real])
+            self.G_losses = list(histRec['g_loss']); self.D_losses = list(histRec['d_loss'])
+            self.nrmse_train = list(histRec['nrmse_train']); self.l1_train = list(histRec['l1_train'])
+            self.Massdiffs = list(histRec['Massdiffs'])
+            self.nrmse_val = list(histRec['nrmse_val']); self.l1_val = list(histRec['l1_val'])
+            self.bce_fake = list(histRec['bce_fake']);  self.bce_real = list(histRec['bce_real'])
             print('history of existing training record successfully loaded~' )     
+        self.pure_gan = pure_gan
         
     def empty_cache(self):
         torch.cuda.empty_cache()
@@ -147,35 +149,37 @@ class wgan_trainer:
         
     def validate(self,batchsize):
         valfile_num = len(self.valfiles)
-        batchsize = min(valfile_num,batchsize)
+        batchsize   = min(valfile_num,batchsize)
         # set the model in eval mode
         self.netD.eval()
         self.netG.eval()
         Mass_diff = 0; nrmse = 0; nl1err = 0
         # evaluate on validation set
         fileind = 0
-        batch_step = 0
         with torch.no_grad():
             while fileind < valfile_num:
                 dyn, noise = load_data_batch(fileind,self.valfiles,b_size=batchsize,dep=self.dep,img_size=self.img_size,\
                                             resize_option=self.resize_option,\
                                             noise_mode=self.noise_mode,normalize_factor = self.normalize_factor,\
-                                            volatility=self.volatility,sigma=self.sigma,xi=self.xi,scaling=self.scaling,white_noise_ratio=self.white_noise_ratio)
+                                            volatility=self.volatility,sigma=self.sigma,xi=self.xi,scaling=self.scaling,\
+                                            white_noise_ratio=self.white_noise_ratio)
                 fileind += batchsize
-
-                real_cpu = dyn.to(self.device)
-                noise    = noise.to(self.device)
+                
+                real_cpu = dyn.to(self.device) 
+                noise    = noise.to(self.device) 
                 fake = self.netG(noise + real_cpu).clamp(min=0).detach()
                 fake[real_cpu==0] = 0
 
-                mass_fake = compute_mass(fake,device=self.device)
+                mass_fake = compute_mass(fake,device=self.device) 
                 mass_real = compute_mass(real_cpu,device=self.device)
                 mass_diff = torch.divide(torch.abs(mass_fake - mass_real), mass_real).sum()
 
                 Mass_diff  = Mass_diff + mass_diff
                 nrmse      = nrmse     + aver_mse(fake,real_cpu)  * fake.shape[0]
                 nl1err     = nl1err    + aver_l1(fake,real_cpu)   * fake.shape[0]
-                del dyn, real_cpu, noise 
+                del dyn, real_cpu, noise, fake
+                self.empty_cache()
+        
         return Mass_diff/(valfile_num*self.dep), nrmse/valfile_num, nl1err/valfile_num
        
     def save_model(self,epoch=0,global_step=None):
@@ -184,9 +188,14 @@ class wgan_trainer:
             print('Created checkpoint directory')
         except OSError:
             pass
-        torch.save({'model_state_dict': self.netD.state_dict()}, self.dir_checkpoint + f'netD_wg_{self.noise_mode}_scaling_{self.scaling}_supweigtdecay_{self.weight_super_decay}_epoch_{epoch}.pt')
-        torch.save({'model_state_dict': self.netG.state_dict()}, self.dir_checkpoint + f'netG_wg_{self.noise_mode}_scaling_{self.scaling}_supweigtdecay_{self.weight_super_decay}_epoch_{epoch}.pt')
-        np.savez(self.dir_checkpoint +f'wgan_train_track_{self.noise_mode}_scaling_{self.scaling}_supweigtdecay_{self.weight_super_decay}.npz',\
+        
+        setting_name = f'wg_{self.noise_mode}_scaling_{self.scaling}_supwegt{self.weight_super}_supweigtdecay_{self.weight_super_decay}_masswegt_{self.weight_masscon}_d_{self.update_D_every}_g_{self.update_G_every}_gradpen_{self.weight_gradpen}'
+        
+        epoch_note = f'_epoch{epoch}_'
+        
+        torch.save({'model_state_dict': self.netD.state_dict()}, self.dir_checkpoint + 'netD_' + setting_name + epoch_note + '.pt')
+        torch.save({'model_state_dict': self.netG.state_dict()}, self.dir_checkpoint + 'netG_' + setting_name + epoch_note + '.pt')
+        np.savez(self.dir_checkpoint + 'wgan_train_track_' + setting_name + '.npz',\
                          g_loss=self.G_losses,d_loss=self.D_losses,Massdiffs=self.Massdiffs,\
                          nrmse_train=self.nrmse_train,l1_train=self.l1_train,\
                          nrmse_val=self.nrmse_val,l1_val=self.l1_val,\
@@ -206,6 +215,12 @@ class wgan_trainer:
         random.seed(self.manual_seed)
         torch.manual_seed(self.manual_seed)
         
+        self.weight_super   = weight_super
+        self.weight_masscon = weight_masscon
+        self.weight_gradpen = weight_gradpen
+        self.update_D_every = update_D_every
+        self.update_G_every = update_G_every
+        
         real_label = 1.
         fake_label = 0.
         use_cuda = True if (torch.cuda.is_available() and self.ngpu > 0) else False        
@@ -223,7 +238,7 @@ class wgan_trainer:
         self.valfiles  = random.sample(ncfiles,k=testtotal)
         ncfiles = set(ncfiles) - set(self.valfiles)
         self.testfiles = random.sample(ncfiles,k=200)
-        np.savez(self.dir_checkpoint +f'filesUsed_{self.noise_mode}_scaling_{self.scaling}_supweigtdecay_{self.weight_super_decay}.npz',\
+        np.savez(self.dir_checkpoint +f'filesUsed_{self.noise_mode}_scaling_{self.scaling}_supweigt_{weight_super}_supweigtdecay_{self.weight_super_decay}_masswgt_{weight_masscon}.npz',\
                          trainfiles=self.trainfiles,valfiles=self.valfiles,testfiles=self.testfiles)
         
         
@@ -231,7 +246,6 @@ class wgan_trainer:
         print('weight of supervised loss term in errG = ',   weight_super)
         assert(weight_masscon>=0)
         assert(weight_super>=0)
-        
         # Training Loop
         # Lists to keep track of progress
 
@@ -239,10 +253,10 @@ class wgan_trainer:
         L1_loss    = nn.L1Loss()
         L2_loss    = nn.MSELoss()
         optimizerD = optim.Adam(self.netD.parameters(), lr=lrd, betas=(beta1, 0.999))
-        schedulerD = StepLR(optimizerD,step_size=20,gamma=np.sqrt(.1))
+        schedulerD = StepLR(optimizerD, step_size=1, gamma=0.95, verbose=True)
 #         schedulerD = ReduceLROnPlateau(optimizerD, 'min',factor=0.8,patience=20,min_lr=1e-7)
         optimizerG = optim.Adam(self.netG.parameters(), lr=lrg, betas=(beta1, 0.999))
-        schedulerG = StepLR(optimizerG, step_size=40, gamma=0.9)
+        schedulerG = StepLR(optimizerG, step_size=1, gamma=0.95, verbose=True)
         print("Starting Training Loop...")
         
         global_step = 0;
@@ -253,17 +267,15 @@ class wgan_trainer:
                 while fileind < traintotal:
                     # set the model back to training mode
                     self.netD.train()
-                    self.netG.train()
-
+                    self.netG.train()                       
                     dyn, noise = load_data_batch(fileind, self.trainfiles, \
                                                  b_size=b_size, dep=self.dep, img_size=self.img_size,\
                                                  resize_option=self.resize_option,\
                                                  noise_mode=self.noise_mode, normalize_factor=self.normalize_factor,\
                                                  volatility=self.volatility,sigma=self.sigma,xi=self.xi,scaling=self.scaling,white_noise_ratio=self.white_noise_ratio)
-                    noise = noise.to(self.device)
+                    noise    = noise.to(self.device)
                     real_cpu = dyn.to(self.device)
                     fileind += b_size
-
                     # Generate fake image batch with G
                     fake = self.netG(noise + real_cpu).clamp(min=0)
                     with torch.no_grad():
@@ -287,7 +299,6 @@ class wgan_trainer:
                         d_loss = D_fake_1.mean() - D_real_1.mean() + gradient_penalty
 #                         print(f'D_fake_mean = {D_fake_1.mean().item()}, D_real_mean = {D_real_1.mean().item()}, grad pen. = {gradient_penalty}')
                         d_loss.backward()
-
                         optimizerD.step()           
                         self.D_losses.append(d_loss.item())
                         with torch.no_grad():
@@ -307,12 +318,15 @@ class wgan_trainer:
                                                              gp_weight=weight_gradpen)
 
                         d_loss = D_fake_2.mean() - D_real_2.mean() + gradient_penalty
-
-                        mass_fake = compute_mass(fake,device=self.device)
-                        mass_fake.retain_grad()
-                        mass_real = compute_mass(real_cpu,device=self.device)
-                        g_loss = -(1-weight_super)*d_loss + weight_super*L2(fake,real_cpu) + delta*weight_super*L1(fake,real_cpu) + weight_masscon*L2_loss(mass_fake,mass_real)
-
+                        
+                        if self.pure_gan: # pure WGAN
+                            g_loss = -d_loss  
+                        else:
+                            mass_fake = compute_mass(fake,device=self.device)
+                            mass_fake.retain_grad()
+                            mass_real = compute_mass(real_cpu,device=self.device)
+                            g_loss = -(1-weight_super)*d_loss + weight_super*L2(fake,real_cpu) + delta*weight_super*L1(fake,real_cpu) + weight_masscon*L2_loss(mass_fake,mass_real)
+                        
                         # Calculate gradients for G
                         optimizerG.zero_grad()
                         g_loss.backward()
@@ -325,13 +339,14 @@ class wgan_trainer:
                             bceF += bce_loss_fake
                             self.bce_fake.append(bce_loss_fake.item())
                     G_update_ind += 1
-                    del dyn, real_cpu, noise
+                    del dyn, real_cpu, noise, fake
                     self.empty_cache()
+                    
                     ############################
                     # Validation
                     ############################
                     if self.dir_hist is None:
-                         val_condition = (fileind > traintotal-b_size) or ((epoch==0) and (global_step==0))
+                         val_condition = (fileind > traintotal-b_size) or ( (epoch==0) and (global_step==0) )
                     else:
                          val_condition = (fileind > traintotal-b_size)
                     if val_condition: # (b_size>abs(traintotal//2-fileind)) or  
@@ -344,6 +359,7 @@ class wgan_trainer:
                         schedulerD.step()
                         bceR = 0; bceF = 0
                         schedulerG.step()
+                    
                     ############################
                     # Output training stats, and visualization
                     ############################
@@ -364,16 +380,4 @@ class wgan_trainer:
                     sys.exit(0)
                 except SystemExit:
                     os._exit(0)
-
-    
-    
-    
-    
-    
-    
-    
-    
-    
-   
-    
 
